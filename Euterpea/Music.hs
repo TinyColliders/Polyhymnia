@@ -1,12 +1,17 @@
-
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE InstanceSigs      #-}
 {-# LANGUAGE TupleSections     #-}
+{-# LANGUAGE DeriveFunctor     #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE GADTs #-}
 
 module Euterpea.Music where
 
 import           Data.Bifunctor (first)
 import           Data.List      (uncons)
+import           Data.Maybe     (fromMaybe)
+import qualified Data.Map.Strict as Map
+import GHC.Generics
 
 infixr 5 :+:, :=:
 
@@ -20,24 +25,25 @@ data PitchClass  =  Cff | Cf | C | Dff | Cs | Df | Css | D | Eff | Ds
                  |  Bf | Ass | B | Bs | Bss
      deriving (Show, Eq, Ord, Read, Enum, Bounded)
 
-data Primitive a  =  Note Dur a
-                  |  Rest Dur
-     deriving (Show, Eq, Ord)
+data Primitive a where
+  Note :: Dur -> a -> Primitive a
+  Rest :: Dur -> Primitive a
+  deriving (Show, Eq, Ord, Functor)
 
-data Music a  =
-       Prim (Primitive a)               --  primitive value
-    |  Music a :+: Music a              --  sequential composition
-    |  Music a :=: Music a              --  parallel composition
-    |  Modify Control (Music a)         --  modifier
-  deriving (Show, Eq, Ord)
+data Music a where
+  Prim :: (Primitive a) -> Music a
+  (:+:) :: Music a -> Music a -> Music a
+  (:=:) :: Music a -> Music a -> Music a
+  Modify :: Control -> (Music a) -> Music a
+  deriving (Show, Eq, Ord, Functor)
 
-data Control =
-          Tempo       Rational           --  scale the tempo
-       |  Transpose   AbsPitch           --  transposition
-       |  Instrument  InstrumentName     --  instrument label
-       |  Phrase      [PhraseAttribute]  --  phrase attributes
-       |  KeySig      PitchClass Mode    --  key signature and mode
-       |  Custom      String                       --  for user-specified controls
+data Control where
+  Tempo :: Rational -> Control
+  Transpose :: AbsPitch -> Control
+  Instrument :: InstrumentName -> Control
+  Phrase :: [PhraseAttribute] -> Control
+  KeySig :: PitchClass -> Mode -> Control
+  Custom :: String -> Control
   deriving (Show, Eq, Ord)
 
 data Mode = Major | Minor |
@@ -98,12 +104,16 @@ data PhraseAttribute  =  Dyn Dynamic
                       |  Orn Ornament
      deriving (Show, Eq, Ord)
 
-data Dynamic  =  Accent Rational | Crescendo Rational | Diminuendo Rational
-              |  StdLoudness StdLoudness | Loudness Rational
-     deriving (Show, Eq, Ord)
+data Dynamic where
+  Accent :: Rational -> Dynamic
+  Crescendo :: Rational -> Dynamic
+  Diminuendo :: Rational -> Dynamic
+  StdLoudness :: StdLoudness -> Dynamic
+  Loudness :: Rational -> Dynamic
+  deriving (Show, Eq, Ord)
 
 data StdLoudness = PPP | PP | P | MP | SF | MF | NF | FF | FFF
-     deriving (Show, Eq, Ord, Enum)
+     deriving (Show, Eq, Ord, Enum, Bounded, Read)
 
 data Tempo = Ritardando Rational | Accelerando Rational
      deriving (Show, Eq, Ord)
@@ -131,15 +141,16 @@ type Volume = Int
 -- addVolume v  = mMap (\p -> (p,v))
 
 addVolume :: Volume -> Music Pitch -> Music (Pitch, Volume)
-addVolume v = mMap (, v)
+addVolume v = fmap (, v)
 
 
-data NoteAttribute =
-        Volume  Int   --  MIDI convention: 0=min, 127=max
-     |  Fingering Integer
-     |  Dynamics String
-     |  Params [Double]
-   deriving (Eq, Show)
+
+data NoteAttribute
+    = Volume {-# UNPACK #-} !Int -- Utilize Int for efficiency
+    | Fingering {-# UNPACK #-} !Int
+    | Dynamics !String
+    | Params ![Double] -- Using Vector instead of list for potential performance gains
+    deriving (Eq, Show, Generic)
 
 type Note1   = (Pitch, [NoteAttribute])
 type Music1  = Music Note1
@@ -149,12 +160,12 @@ class ToMusic1 a where
 
 instance ToMusic1 Pitch where
     toMusic1 :: Music Pitch -> Music1
-    toMusic1 = mMap (, [])
+    toMusic1 = fmap (, [])
 
 
 instance ToMusic1 (Pitch, Volume) where
     toMusic1 :: Music (Pitch, Volume) -> Music1
-    toMusic1  = mMap (\(p, v) -> (p, [Volume v]))
+    toMusic1  = fmap (\(p, v) -> (p, [Volume v]))
 
 instance ToMusic1 Note1 where
     toMusic1 :: Music Note1 -> Music1
@@ -162,11 +173,11 @@ instance ToMusic1 Note1 where
 
 instance ToMusic1 AbsPitch where
     toMusic1 :: Music AbsPitch -> Music1
-    toMusic1 = mMap (\a -> (pitch a, []))
+    toMusic1 = fmap (\a -> (pitch a, []))
 
 instance ToMusic1 (AbsPitch, Volume) where
     toMusic1 :: Music (AbsPitch, Volume) -> Music1
-    toMusic1 = mMap (\(p,v) -> (pitch p, [Volume v]))
+    toMusic1 = fmap (\(p,v) -> (pitch p, [Volume v]))
 
 note            :: Dur -> a -> Music a
 note dur_ p        = Prim (Note dur_ p)
@@ -178,13 +189,13 @@ tempo           :: Dur -> Music a -> Music a
 tempo r = Modify (Tempo r)
 
 transpose       :: AbsPitch -> Music a -> Music a
-transpose i m   = Modify (Transpose i) m
+transpose i = Modify (Transpose i)
 
 instrument      :: InstrumentName -> Music a -> Music a
-instrument i m  = Modify (Instrument i) m
+instrument i = Modify (Instrument i)
 
 phrase          :: [PhraseAttribute] -> Music a -> Music a
-phrase pa m     = Modify (Phrase pa) m
+phrase pa = Modify (Phrase pa)
 
 keysig          :: PitchClass -> Mode -> Music a -> Music a
 keysig pc mo = Modify (KeySig pc mo)
@@ -284,10 +295,10 @@ lineToList _                  =
     error "lineToList: argument not created by function line"
 
 invertAt :: Pitch -> Music Pitch -> Music Pitch
-invertAt pRef = mMap (\p -> pitch (2 * absPitch pRef - absPitch p))
+invertAt pRef = fmap (\p -> pitch (2 * absPitch pRef - absPitch p))
 
 invertAt1 :: Pitch -> Music (Pitch, a) -> Music (Pitch, a)
-invertAt1 pRef = mMap (\(p,x) -> (pitch (2 * absPitch pRef - absPitch p),x))
+invertAt1 pRef = fmap (\(p,x) -> (pitch (2 * absPitch pRef - absPitch p),x))
 
 -- invert :: Music Pitch -> Music Pitch
 -- invert m =
@@ -462,15 +473,15 @@ pMap f (Rest dur_)   = Rest dur_
 
 mMap                 :: (a -> b) -> Music a -> Music b
 mMap f (Prim p)     = Prim (pMap f p)
-mMap f (m1 :+: m2)  = mMap f m1 :+: mMap f m2
-mMap f (m1 :=: m2)  = mMap f m1 :=: mMap f m2
-mMap f (Modify c m) = Modify c (mMap f m)
+mMap f (m1 :+: m2)  = fmap f m1 :+: fmap f m2
+mMap f (m1 :=: m2)  = fmap f m1 :=: fmap f m2
+mMap f (Modify c m) = Modify c (fmap f m)
 
-instance Functor Primitive where
-    fmap = pMap
+-- instance Functor Primitive where
+--     fmap = pMap
 
-instance Functor Music where
-    fmap = mMap
+-- instance Functor Music where
+--     fmap = mMap
 
 mFold ::  (Primitive a -> b) -> (b->b->b) -> (b->b->b) ->
           (Control -> b -> b) -> Music a -> b
@@ -483,14 +494,14 @@ mFold f (+:) (=:) g m =
        Modify c m -> g c (rec m)
 
 shiftPitches :: AbsPitch -> Music Pitch -> Music Pitch
-shiftPitches k = mMap (trans k)
+shiftPitches k = fmap (trans k)
 
 -- shiftPitches1 :: AbsPitch -> Music (Pitch, b) -> Music (Pitch, b)
 -- shiftPitches1 k = mMap (\(p,xs) -> (trans k p, xs))
 
 
 shiftPitches1 :: AbsPitch -> Music (Pitch, b) -> Music (Pitch, b)
-shiftPitches1 k = mMap (first (trans k))
+shiftPitches1 k = fmap (first (trans k))
 
 scaleDurations :: Rational -> Music a -> Music a
 scaleDurations r (Prim (Note dur_ p)) = note (dur_/r) p

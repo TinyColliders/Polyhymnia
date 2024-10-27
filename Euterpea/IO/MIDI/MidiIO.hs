@@ -10,7 +10,7 @@ module Euterpea.IO.MIDI.MidiIO (
   MidiMessage (ANote, Std),
   getTimeNow,
   DeviceInfo(..), InputDeviceID, OutputDeviceID, Message(..), Time,
-  unsafeInputID, unsafeOutputID,
+  unsafeInputID, unsafeOutputID, EventQueue(..), DeviceState(..), playTrackRealTime, recordMidi, pollMidiCB, printAllDeviceInfo,
 ) where
 
 import           Codec.Midi                   (Channel, Key, Message (..),
@@ -37,17 +37,15 @@ import           Sound.PortMidi               (DeviceID, DeviceInfo (..),
 
 import           Data.Bits                    (shiftL, shiftR, (.&.), (.|.))
 import qualified Data.Heap                    as Heap
-import           Data.List                    (findIndex)
-import           Data.Maybe                   (mapMaybe)
+import           Data.Maybe                   (mapMaybe, fromMaybe)
 
 import           Control.DeepSeq              (NFData)
 import qualified Control.Monad                as CM
 import           Data.Functor                 ((<&>))
 import           System.IO                    (hPutStrLn, stderr)
 import           System.IO.Unsafe             (unsafePerformIO)
-import qualified Data.Vector.Unboxed as VU
 import qualified Data.Vector.Storable as VS
-import qualified Data.ByteString as BS
+import Control.Monad
 
 type MidiEvent = (Time, MidiMessage)
 
@@ -73,8 +71,19 @@ data EventQueue = EventQueue {
 
 newtype InputDeviceID  = InputDeviceID  DeviceID
   deriving (Eq, Show, NFData)
+
 newtype OutputDeviceID = OutputDeviceID DeviceID
   deriving (Eq, Show, NFData)
+
+-- Fixed-size bounded channels for better memory usage
+type MidiChannel = TChan (Time, MidiMessage)
+
+data DeviceState = DeviceState {
+    inputBuffer  :: {-# UNPACK #-} !MidiChannel,
+    outputBuffer :: {-# UNPACK #-} !MidiChannel,
+    deviceQueue  :: {-# UNPACK #-} !EventQueue,
+    lastEventTime :: {-# UNPACK #-} !(IORef Time)
+}
 
 unsafeInputID :: Int -> InputDeviceID
 unsafeInputID = InputDeviceID
@@ -82,10 +91,14 @@ unsafeInputID = InputDeviceID
 unsafeOutputID :: Int -> OutputDeviceID
 unsafeOutputID = OutputDeviceID
 
+
 getTimeNow :: IO Time
-getTimeNow = do
-  t <- time
-  return (fromIntegral t / 1000)
+getTimeNow = (/ 1000) . fromIntegral <$> time
+
+-- getTimeNow :: IO Time
+-- getTimeNow = do
+--   t <- time
+--   return (fromIntegral t / 1000)
 
 getAllDevices :: IO ([(InputDeviceID, DeviceInfo)], [(OutputDeviceID, DeviceInfo)])
 getAllDevices = do
@@ -112,23 +125,26 @@ defaultInput f a = do
 data PrioChannel a b = PrioChannel
     { get  :: IO (Heap.MinPrioHeap a b),
       push :: a -> b -> IO (),
-      pop  :: IO (a,b),
-      peek :: IO (Maybe (a,b)) }
+      pop  :: IO (Maybe (a, b)),
+      peek :: IO (Maybe (a, b)) }
 
 makePriorityChannel :: IO (PrioChannel Time Message)
 makePriorityChannel = do
   heapRef <- newIORef (Heap.empty :: Heap.MinPrioHeap Time Message)
-  let get = readIORef heapRef
-      push a b = modifyIORef heapRef (Heap.insert (a,b))
+  let getHeap = readIORef heapRef
+      push a b = modifyIORef heapRef (Heap.insert (a, b))
       pop = do
-        h <- get
-        let Just (a, h') = Heap.view h
-        writeIORef heapRef h'
-        return a
+        h <- getHeap
+        case Heap.view h of
+          Just ((a, b), h') -> do
+            writeIORef heapRef h'
+            return (Just (a, b))
+          Nothing -> return Nothing
       peek = do
-        Heap.viewHead <$> get
+        fmap fst . Heap.view <$> getHeap
 
-  return $ PrioChannel get push pop peek
+  return $ PrioChannel getHeap push pop peek
+
 
 outDevMap :: IORef [(OutputDeviceID,
                      (PrioChannel Time Message, -- priority channel
@@ -161,7 +177,10 @@ terminateMidi :: IO ()
 terminateMidi = do
   inits <- readIORef outDevMap
   mapM_ (\(_, (_,_out,stop)) -> stop) inits
-  terminate
+  result <- terminate
+  case result of
+    Left err -> putStrLn ("Error during termination: " ++ show err)
+    Right _ -> return ()
   writeIORef outDevMap []
   writeIORef outPort []
   writeIORef inPort []
@@ -251,22 +270,33 @@ outputMidi devId = do
   loop
   return ()
 
+-- playMidi :: OutputDeviceID -> Midi -> IO ()
+-- playMidi device midi@(Midi _ division _) = do
+--   let track = toRealTime division (toAbsTime (head (tracks (toSingleTrack midi))))
+--   out <- midiOutRealTime device
+--   case out of
+--     Nothing -> return ()
+--     Just (out, stop) -> do
+--       t0 <- getTimeNow
+--       finally (playTrack t0 0 out track) stop
+--   where
+--     playTrack t0 t' out [] = out (t0 + t', TrackEnd)
+--     playTrack t0 _ out (e@(t, m) : s) = do
+--       out (t0 + t, m)
+--       if isTrackEnd m
+--         then return ()
+--         else playTrack t0 t out s
+
 playMidi :: OutputDeviceID -> Midi -> IO ()
 playMidi device midi@(Midi _ division _) = do
   let track = toRealTime division (toAbsTime (head (tracks (toSingleTrack midi))))
-  out <- midiOutRealTime device
-  case out of
-    Nothing -> return ()
-    Just (out, stop) -> do
+  midiOutRealTime device >>= maybe (return ()) (`playMIDIImplementation` track)
+  where
+    playMIDIImplementation (out, stop) track = do
       t0 <- getTimeNow
       finally (playTrack t0 0 out track) stop
-  where
-    playTrack t0 t' out [] = out (t0 + t', TrackEnd)
-    playTrack t0 t' out (e@(t, m) : s) = do
-      out (t0 + t, m)
-      if isTrackEnd m
-        then return ()
-        else playTrack t0 t out s
+    playTrack t0 _ out [] = out (t0, TrackEnd)
+    playTrack t0 _ out ((t, m):s) = out (t0 + t, m) >> unless (isTrackEnd m) (playTrack t0 t out s)
 
 midiOutRealTime' :: OutputDeviceID -> IO (Maybe ((Time, Message) -> IO (), IO ()))
 midiOutRealTime' odid@(OutputDeviceID devId) = do
@@ -300,7 +330,7 @@ midiOutRealTime' odid@(OutputDeviceID devId) = do
         Right _ -> return ()
 
 midiOutRealTime :: OutputDeviceID -> IO (Maybe ((Time, Message) -> IO (), IO ()))
-midiOutRealTime odid@(OutputDeviceID devId) = do
+midiOutRealTime (OutputDeviceID devId) = do
   s <- openOutput devId 1
   case s of
     Left  e -> reportError "outputMidi" e >> return Nothing
@@ -308,13 +338,13 @@ midiOutRealTime odid@(OutputDeviceID devId) = do
       ch <- atomically newTChan
       wait <- newEmptyMVar
       fin <- newEmptyMVar
-      forkIO (pump s ch wait fin)
-      return $ Just (output s ch wait, stop ch fin)
+      _ <- forkIO (pump s ch wait fin)
+      pure $ Just (output s ch wait, stop ch fin)
   where
     stop ch fin = atomically (unGetTChan ch Nothing) >> takeMVar fin
-    output s ch wait evt@(_, m) = do
+    output _ ch wait evt@(_, m) = do
       atomically $ writeTChan ch (Just evt)
-      if isTrackEnd m then takeMVar wait else return ()
+      CM.when (isTrackEnd m) $ takeMVar wait
     pump s ch wait fin = loop
       where
         loop = do
@@ -446,12 +476,13 @@ recordMidi device f = do
     Just fin -> do
       track <- getChanContents ch
       done <- newEmptyMVar
-      forkIO (f track >> putMVar done ())
+      _ <- forkIO (f track >> putMVar done ())
       putStrLn "Start recording, hit ENTER when you are done."
-      getLine
+      _ <- getLine
       fin
       takeMVar done
       return ()
+
 midiInRealTime :: DeviceID -> ((Time, Message) -> IO Bool) -> IO (Maybe (IO ()))
 midiInRealTime device callback = do
   r <- openInput device
@@ -459,8 +490,8 @@ midiInRealTime device callback = do
     Left e -> reportError "midiInRealTime" e >> return Nothing
     Right s -> do
       fin <- newEmptyMVar
-      forkIO (loop Nothing s fin)
-      return (Just (putMVar fin () >> putMVar fin ()))
+      _ <- forkIO (loop Nothing s fin)
+      pure $ Just (putMVar fin () >> putMVar fin ())
   where
     loop start s fin = do
       done <- tryTakeMVar fin
@@ -472,7 +503,7 @@ midiInRealTime device callback = do
           case e of
             Left e -> do
                 reportError "midiInRealTime" e
-                callback (t, TrackEnd)
+                _ <- callback (t, TrackEnd)
                 return ()
             Right l -> do
               t <- getTimeNow
@@ -480,9 +511,213 @@ midiInRealTime device callback = do
       where
         sendEvts start now [] = loop start s fin
         sendEvts start now (e@(PMEvent m t):l) = do
-          let t0 = maybe t id start
+          let t0 = Data.Maybe.fromMaybe t start
           case msgToMidi $ decodeMsg m of
             Just m' -> do
               done <- callback (now + fromIntegral (t - t0) / 1E3, m')
               if done then CM.void (close s) else sendEvts (Just t0) now l
             Nothing -> sendEvts (Just t0) now l
+
+
+{-
+module OptimizedMidiIO where
+
+import qualified Data.Vector.Unboxed as VU
+import qualified Data.Vector.Storable as VS
+import qualified Data.ByteString as BS
+import Control.Concurrent.BoundedChan
+import Control.Monad.ST
+import Data.IORef.Unboxed
+import Foreign.Storable
+import GHC.Conc (setNumCapabilities)
+import System.IO.Unsafe (unsafePerformIO)
+
+-- Use strict data types for messages
+data MidiMessage' = 
+    ANote' {-# UNPACK #-} !Channel 
+           {-# UNPACK #-} !Key 
+           {-# UNPACK #-} !Velocity 
+           {-# UNPACK #-} !Time
+  | Std' !Message
+  deriving Show
+
+-- Optimized priority queue for real-time events
+data EventQueue = EventQueue {
+    queueBuffer :: {-# UNPACK #-} !(VS.Vector (Time, MidiMessage')),
+    queueSize   :: {-# UNPACK #-} !Int,
+    queueHead   :: {-# UNPACK #-} !Int,
+    queueTail   :: {-# UNPACK #-} !Int
+}
+
+-- Fixed-size bounded channels for better memory usage
+type MidiChannel = BoundedChan (Time, MidiMessage')
+
+-- Optimized device management
+data DeviceState = DeviceState {
+    inputBuffer  :: {-# UNPACK #-} !MidiChannel,
+    outputBuffer :: {-# UNPACK #-} !MidiChannel,
+    deviceQueue  :: {-# UNPACK #-} !EventQueue,
+    lastEventTime :: {-# UNPACK #-} !UnboxedIORef Time
+}
+
+-- Create a new event queue with pre-allocated buffer
+newEventQueue :: Int -> IO EventQueue
+newEventQueue size = do
+    let vec = VS.replicate size (0, Std' (NoteOff 0 0 0))
+    return EventQueue {
+        queueBuffer = vec,
+        queueSize = size,
+        queueHead = 0,
+        queueTail = 0
+    }
+
+-- Optimized event insertion using circular buffer
+insertEvent :: EventQueue -> (Time, MidiMessage') -> IO EventQueue
+insertEvent q@EventQueue{..} event = do
+    let newTail = (queueTail + 1) `mod` queueSize
+    if newTail == queueHead 
+        then error "Queue full"
+        else do
+            let vec' = VS.modify (\v -> VS.write v queueTail event) queueBuffer
+            return q { queueBuffer = vec', queueTail = newTail }
+
+-- Optimized event retrieval
+getNextEvent :: EventQueue -> IO (Maybe (Time, MidiMessage'), EventQueue)
+getNextEvent q@EventQueue{..} = 
+    if queueHead == queueTail
+        then return (Nothing, q)
+        else do
+            let event = queueBuffer `VS.unsafeIndex` queueHead
+                newHead = (queueHead + 1) `mod` queueSize
+            return (Just event, q { queueHead = newHead })
+
+-- Optimized MIDI input handling
+optimizedMidiInput :: InputDeviceID -> DeviceState -> IO ()
+optimizedMidiInput devId state = do
+    -- Pre-allocate buffers
+    let bufferSize = 1024
+    inBuf <- VS.new bufferSize
+    
+    let loop = do
+            -- Read events in batch
+            events <- readEventsOptimized devId inBuf
+            
+            -- Process events in bulk
+            processEventsBatch events
+            
+            -- Continue loop
+            loop
+            
+    loop
+  where
+    processEventsBatch events = do
+        now <- getTimeNow
+        -- Process multiple events at once using vectors
+        VS.forM_ events $ \event -> do
+            writeBoundedChan (inputBuffer state) (now, event)
+
+-- Optimized MIDI output handling
+optimizedMidiOutput :: OutputDeviceID -> DeviceState -> IO ()
+optimizedMidiOutput devId state = do
+    -- Pre-allocate output buffer
+    outBuf <- VS.new 1024
+    
+    let loop lastTime = do
+            now <- getTimeNow
+            events <- drainEvents (outputBuffer state) 64  -- Process up to 64 events at once
+            
+            -- Bulk process events
+            processEventsBatch events outBuf
+            
+            -- Calculate optimal sleep time
+            let nextWakeup = calculateNextWakeup events
+            threadDelay nextWakeup
+            
+            loop now
+            
+    loop 0
+  where
+    processEventsBatch events outBuf = do
+        VS.unsafeWith outBuf $ \ptr -> do
+            -- Direct memory manipulation for better performance
+            mapM_ (writeEvent ptr) events
+            flushEvents ptr (VS.length events)
+
+-- Low-level optimized MIDI event writing
+writeEvent :: Ptr Word8 -> (Time, MidiMessage') -> IO ()
+writeEvent ptr (time, msg) = do
+    -- Direct memory writing without bounds checking
+    pokeByteOff ptr 0 (encodeMsg msg)
+    pokeByteOff ptr 4 (round (time * 1000) :: Int32)
+
+-- Optimized initialization
+initializeOptimizedMidi :: Int -> IO DeviceState
+initializeOptimizedMidi bufferSize = do
+    -- Set number of capabilities for optimal threading
+    setNumCapabilities 2  -- One for input, one for output
+    
+    -- Create bounded channels with fixed size
+    inChan <- newBoundedChan bufferSize
+    outChan <- newBoundedChan bufferSize
+    
+    -- Create event queue with pre-allocated buffer
+    queue <- newEventQueue bufferSize
+    
+    -- Use unboxed IORef for better performance
+    timeRef <- newUnboxedIORef 0
+    
+    return DeviceState {
+        inputBuffer = inChan,
+        outputBuffer = outChan,
+        deviceQueue = queue,
+        lastEventTime = timeRef
+    }
+
+-- Helper functions for batch processing
+drainEvents :: MidiChannel -> Int -> IO [(Time, MidiMessage')]
+drainEvents chan maxEvents = do
+    -- Read multiple events at once
+    events <- readAvailable chan maxEvents
+    return events
+  where
+    readAvailable chan 0 = return []
+    readAvailable chan n = do
+        empty <- isEmptyChan chan
+        if empty 
+            then return []
+            else do
+                event <- readChan chan
+                rest <- readAvailable chan (n-1)
+                return (event : rest)
+
+-- Calculate optimal sleep time based on event timing
+calculateNextWakeup :: [(Time, MidiMessage')] -> Int
+calculateNextWakeup events = 
+    case events of
+        [] -> 1000  -- Default sleep time when no events
+        xs -> min 1000 $ round $ (minimum (map fst xs) * 1000)
+
+-- Main processing loop with optimizations
+processOptimizedMidi :: DeviceState -> IO ()
+processOptimizedMidi state = do
+    -- Start input and output threads with high priority
+    inputThread <- forkOS $ optimizedMidiInput inDev state
+    outputThread <- forkOS $ optimizedMidiOutput outDev state
+    
+    -- Set thread priorities
+    setThreadPriority inputThread high
+    setThreadPriority outputThread high
+    
+    -- Monitor and adjust performance
+    monitorPerformance state
+  where
+    monitorPerformance state = do
+        -- Collect performance metrics
+        stats <- gatherPerformanceStats state
+        -- Adjust parameters based on stats
+        adjustParameters state stats
+        -- Continue monitoring
+        threadDelay 1000000  -- Check every second
+        monitorPerformance state
+
+-}

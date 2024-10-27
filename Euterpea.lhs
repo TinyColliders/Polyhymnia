@@ -15,5 +15,5 @@
 > import Euterpea.IO.MIDI
 > import Control.Arrow
 > import Codec.Midi(exportFile, importFile)
-> import Control.Arrow.Operations
+> --import Control.Arrow.Operations
 

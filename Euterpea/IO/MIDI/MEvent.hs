@@ -1,18 +1,45 @@
--- Define the Euterpea.IO.MIDI.MEvent module, which provides structures and functions for handling MIDI events.
+{-# LANGUAGE DeriveGeneric #-}
+
 module Euterpea.IO.MIDI.MEvent where
 
 -- Import the Euterpea library to utilize musical constructs and functionality.
 import Euterpea.Music
+import GHC.Generics (Generic)
 
 -- | Data type representing a musical event (MEvent).
+-- data MEvent = MEvent {
+--     eTime    :: PTime,          -- ^ Onset time of the event.
+--     eInst    :: InstrumentName, -- ^ Instrument associated with the event.
+--     ePitch   :: AbsPitch,       -- ^ Pitch number of the note.
+--     eDur     :: DurT,           -- ^ Duration of the note.
+--     eVol     :: Volume,         -- ^ Volume (loudness) of the note.
+--     eParams  :: [Double]        -- ^ Optional list of other parameters.
+-- } deriving (Show, Eq, Ord)      -- ^ Automatically derive Show, Eq, and Ord instances.
+
 data MEvent = MEvent {
-    eTime    :: PTime,          -- ^ Onset time of the event.
-    eInst    :: InstrumentName, -- ^ Instrument associated with the event.
-    ePitch   :: AbsPitch,       -- ^ Pitch number of the note.
-    eDur     :: DurT,           -- ^ Duration of the note.
-    eVol     :: Volume,         -- ^ Volume (loudness) of the note.
-    eParams  :: [Double]        -- ^ Optional list of other parameters.
-} deriving (Show, Eq, Ord)      -- ^ Automatically derive Show, Eq, and Ord instances.
+    eTime    :: {-# UNPACK #-} !PTime,
+    eInst    :: !InstrumentName,
+    ePitch   :: {-# UNPACK #-} !AbsPitch,
+    eDur     :: {-# UNPACK #-} !DurT,
+    eVol     :: {-# UNPACK #-} !Volume,
+    eParams  :: ![Double]  
+} deriving (Eq, Generic) 
+
+-- data MEvent = MEvent {
+--     eTime    :: {-# UNPACK #-} !PTime,
+--     eInst    :: !InstrumentName,
+--     ePitch   :: {-# UNPACK #-} !AbsPitch,
+--     eDur     :: {-# UNPACK #-} !DurT,
+--     eVol     :: {-# UNPACK #-} !Volume,
+--     eParams  :: !(V.Vector Double)  -- Using Vector instead of list
+-- } deriving Eq
+
+-- Make MEvent an instance of NFData for better strictness
+-- instance NFData MEvent where
+--     rnf :: MEvent -> ()
+--     rnf (MEvent t i p d v ps) = 
+--         t `seq` i `seq` p `seq` d `seq` v `seq` V.force ps `seq` ()
+
 
 -- | A performance is a list of musical events (MEvents).
 type Performance = [MEvent]
@@ -33,10 +60,10 @@ merge a@(e1:es1)  b@(e2:es2)  =
 
 -- | Context for musical events, maintaining current state like time, instrument, duration, and volume.
 data MContext = MContext { 
-    mcTime :: PTime,           -- ^ Current time in the context.
-    mcInst :: InstrumentName,  -- ^ Current instrument in the context.
-    mcDur  :: DurT,            -- ^ Current note duration in the context.
-    mcVol  :: Volume           -- ^ Current volume in the context.
+    mcTime :: !PTime,           -- ^ Current time in the context.
+    mcInst :: !InstrumentName,  -- ^ Current instrument in the context.
+    mcDur  :: !DurT,            -- ^ Current note duration in the context.
+    mcVol  :: !Volume           -- ^ Current volume in the context.
 } deriving Show
 
 -- | Convert a generic Music structure into a Performance.
@@ -55,7 +82,7 @@ perform1Dur = musicToMEvents defCon . applyControls where
     
     -- | Calculate duration based on metronome setting.
     metro :: Int -> Dur -> DurT
-    metro setting dur = 60 / (fromIntegral setting * dur)
+    metro setting dur_ = 60 / (fromIntegral setting * dur_)
 
 -- | Apply musical controls such as tempo and transposition recursively to a Music1 structure.
 applyControls :: Music1 -> Music1
@@ -85,52 +112,134 @@ musicToMEvents c (Modify (Custom x) m) = musicToMEvents c m   -- ^ Custom modifi
 musicToMEvents c m@(Modify x m') = musicToMEvents c $ applyControls m -- ^ Transpose and tempo addressed by applyControls.
 
 -- | Convert a single note with duration and pitch into an MEvent, considering the current context.
+-- noteToMEvent :: MContext -> Dur -> (Pitch, [NoteAttribute]) -> MEvent
+-- noteToMEvent c@(MContext ct ci cdur cvol) d (p, nas) =
+--     let e0 = MEvent{eTime=ct, ePitch=absPitch p, eInst=ci, eDur=d*cdur, eVol=cvol, eParams=[]}
+--     in  foldr nasFun e0 nas where  -- ^ Apply any note attributes.
+--     nasFun :: NoteAttribute -> MEvent -> MEvent
+--     nasFun (Volume v) ev = ev {eVol = v}
+--     nasFun (Params pms) ev = ev {eParams = pms}
+--     nasFun _ ev = ev
+
+-- | Convert a single note with duration and pitch into an MEvent, considering the current context.
 noteToMEvent :: MContext -> Dur -> (Pitch, [NoteAttribute]) -> MEvent
-noteToMEvent c@(MContext ct ci cdur cvol) d (p, nas) =
-    let e0 = MEvent{eTime=ct, ePitch=absPitch p, eInst=ci, eDur=d*cdur, eVol=cvol, eParams=[]}
-    in  foldr nasFun e0 nas where  -- ^ Apply any note attributes.
-    nasFun :: NoteAttribute -> MEvent -> MEvent
-    nasFun (Volume v) ev = ev {eVol = v}
-    nasFun (Params pms) ev = ev {eParams = pms}
-    nasFun _ ev = ev
+noteToMEvent MContext{mcTime=ct, mcInst=ci, mcDur=cdur, mcVol=cvol} d (p, nas) =
+    foldr applyNoteAttribute initialEvent nas
+  where
+    initialEvent = MEvent
+      { eTime   = ct
+      , ePitch  = absPitch p
+      , eInst   = ci
+      , eDur    = d * cdur
+      , eVol    = cvol
+      , eParams = []
+      }
+    
+    applyNoteAttribute :: NoteAttribute -> MEvent -> MEvent
+    applyNoteAttribute (Volume v) ev = ev { eVol = v }
+    applyNoteAttribute (Params pms) ev = ev { eParams = pms }
+    applyNoteAttribute _ ev = ev
+
+
+-- -- | Convert a phrase into a set of MEvents, applying various phrase attributes like dynamics or tempo changes.
+-- phraseToMEvents :: MContext -> [PhraseAttribute] -> Music1 -> (Performance, DurT)
+-- phraseToMEvents c [] m = musicToMEvents c m
+-- phraseToMEvents c@MContext{mcTime=t, mcInst=i, mcDur=dt} (pa:pas) m =
+--  let  pfd@(pf,dur)  =  phraseToMEvents c pas m
+--       loud x        =  phraseToMEvents c (Dyn (Loudness x) : pas) m
+--       stretch x     =  let  t0 = eTime (head pf);  r  = x/dur
+--                             upd e@MEvent {eTime = t, eDur = d} =
+--                               let  dt  = t-t0
+--                                    t'  = (1+dt*r)*dt + t0
+--                                    d'  = (1+(2*dt+d)*r)*d
+--                               in e {eTime = t', eDur = d'}
+--                        in (map upd pf, (1+x)*dur)
+--       inflate x     =  let  t0  = eTime (head pf);
+--                             r   = x/dur
+--                             upd e@MEvent {eTime = t, eVol = v} =
+--                                 e {eVol =  round ((1+(t-t0)*r) * fromIntegral v)}
+--                        in (map upd pf, dur)
+--  in case pa of
+--    Dyn (Accent x) ->
+--        ( map (\e-> e {eVol = round (x * fromIntegral (eVol e))}) pf, dur)
+--    Dyn (StdLoudness l) -> -- ^ Handle standard loudness levels.
+--        case l of
+--           PPP  -> loud 40;       PP -> loud 50;   P    -> loud 60
+--           MP   -> loud 70;       SF -> loud 80;   MF   -> loud 90
+--           NF   -> loud 100;      FF -> loud 110;  FFF  -> loud 120
+--    Dyn (Loudness x)     ->  phraseToMEvents c{mcVol = round x} pas m
+--    Dyn (Crescendo x)    ->  inflate   x ; Dyn (Diminuendo x)  -> inflate (-x)
+--    Tmp (Ritardando x)   ->  stretch   x ; Tmp (Accelerando x) -> stretch (-x)
+--    Art (Staccato x)     ->  (map (\e-> e {eDur = x * eDur e}) pf, dur)
+--    Art (Legato x)       ->  (map (\e-> e {eDur = x * eDur e}) pf, dur)
+--    Art (Slurred x)      ->
+--        let  lastStartTime  = foldr (max . eTime) 0 pf -- ^ Calculate the latest start time in the phrase.
+--             setDur e       = if eTime e < lastStartTime
+--                              then e {eDur = x * eDur e} -- ^ Adjust duration for all events before the last one.
+--                              else e
+--        in (map setDur pf, dur)
+--    Art _                -> pfd -- ^ Unsupported articulation types are ignored.
+--    Orn _                -> pfd -- ^ Ornaments are not supported and thus ignored.
+  
 
 -- | Convert a phrase into a set of MEvents, applying various phrase attributes like dynamics or tempo changes.
 phraseToMEvents :: MContext -> [PhraseAttribute] -> Music1 -> (Performance, DurT)
 phraseToMEvents c [] m = musicToMEvents c m
 phraseToMEvents c@MContext{mcTime=t, mcInst=i, mcDur=dt} (pa:pas) m =
- let  pfd@(pf,dur)  =  phraseToMEvents c pas m
-      loud x        =  phraseToMEvents c (Dyn (Loudness x) : pas) m
-      stretch x     =  let  t0 = eTime (head pf);  r  = x/dur
-                            upd e@MEvent {eTime = t, eDur = d} =
-                              let  dt  = t-t0
-                                   t'  = (1+dt*r)*dt + t0
-                                   d'  = (1+(2*dt+d)*r)*d
-                              in e {eTime = t', eDur = d'}
-                       in (map upd pf, (1+x)*dur)
-      inflate x     =  let  t0  = eTime (head pf);
-                            r   = x/dur
-                            upd e@MEvent {eTime = t, eVol = v} =
-                                e {eVol =  round ((1+(t-t0)*r) * fromIntegral v)}
-                       in (map upd pf, dur)
- in case pa of
-   Dyn (Accent x) ->
-       ( map (\e-> e {eVol = round (x * fromIntegral (eVol e))}) pf, dur)
-   Dyn (StdLoudness l) -> -- ^ Handle standard loudness levels.
-       case l of
-          PPP  -> loud 40;       PP -> loud 50;   P    -> loud 60
-          MP   -> loud 70;       SF -> loud 80;   MF   -> loud 90
-          NF   -> loud 100;      FF -> loud 110;  FFF  -> loud 120
-   Dyn (Loudness x)     ->  phraseToMEvents c{mcVol = round x} pas m
-   Dyn (Crescendo x)    ->  inflate   x ; Dyn (Diminuendo x)  -> inflate (-x)
-   Tmp (Ritardando x)   ->  stretch   x ; Tmp (Accelerando x) -> stretch (-x)
-   Art (Staccato x)     ->  (map (\e-> e {eDur = x * eDur e}) pf, dur)
-   Art (Legato x)       ->  (map (\e-> e {eDur = x * eDur e}) pf, dur)
-   Art (Slurred x)      ->
-       let  lastStartTime  = foldr (max . eTime) 0 pf -- ^ Calculate the latest start time in the phrase.
-            setDur e       = if eTime e < lastStartTime
-                             then e {eDur = x * eDur e} -- ^ Adjust duration for all events before the last one.
-                             else e
-       in (map setDur pf, dur)
-   Art _                -> pfd -- ^ Unsupported articulation types are ignored.
-   Orn _                -> pfd -- ^ Ornaments are not supported and thus ignored.
-  
+    let 
+        pfd@(pf, dur) = phraseToMEvents c pas m
+        
+        loudnessLevel x = phraseToMEvents c (Dyn (Loudness x) : pas) m
+        
+        adjustTimeAndDuration x = 
+            let 
+                t0 = eTime (head pf)
+                r  = x / dur
+                updateEvent e@MEvent{eTime = t, eDur = d} = 
+                    let dt = t - t0
+                        t' = (1 + dt * r) * dt + t0
+                        d' = (1 + (2 * dt + d) * r) * d
+                    in e {eTime = t', eDur = d'}
+            in (map updateEvent pf, (1 + x) * dur)
+        
+        adjustVolume x = 
+            let 
+                t0 = eTime (head pf)
+                r  = x / dur
+                updateEvent e@MEvent{eTime = t, eVol = v} = 
+                    e {eVol = round ((1 + (t - t0) * r) * fromIntegral v)}
+            in (map updateEvent pf, dur)
+
+        adjustDuration factor = (map (\e -> e {eDur = factor * eDur e}) pf, dur)
+        
+        applySlurred x = 
+            let lastStartTime = maximum $ map eTime pf
+                setDuration e = if eTime e < lastStartTime
+                                then e {eDur = x * eDur e}
+                                else e
+            in (map setDuration pf, dur)
+
+    in case pa of
+        Dyn (Accent x) ->
+            (map (\e -> e {eVol = round (x * fromIntegral (eVol e))}) pf, dur)
+        
+        Dyn (StdLoudness l) -> 
+            loudnessLevel $ case l of
+                PPP -> 40; PP -> 50; P -> 60
+                MP  -> 70; SF -> 80; MF -> 90
+                NF  -> 100; FF -> 110; FFF -> 120
+        
+        Dyn (Loudness x)     -> phraseToMEvents c{mcVol = round x} pas m
+        Dyn (Crescendo x)    -> adjustVolume x
+        Dyn (Diminuendo x)   -> adjustVolume (-x)
+        
+        Tmp (Ritardando x)   -> adjustTimeAndDuration x
+        Tmp (Accelerando x)  -> adjustTimeAndDuration (-x)
+        
+        Art (Staccato x)     -> adjustDuration x
+        Art (Legato x)       -> adjustDuration x
+        
+        Art (Slurred x)      -> applySlurred x
+        
+        Art _                -> pfd
+        Orn _                -> pfd

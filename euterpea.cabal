@@ -58,6 +58,7 @@ library
     , arrows
     , base
     , bytestring
+    , concurrency
     , containers
     , deepseq
     , heap

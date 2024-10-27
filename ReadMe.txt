@@ -1,5 +1,4 @@
-Version 2.0.8
-Last modified: 16-June-2019
+
 Website: http://www.euterpea.com
  _____      _                             
 |  ___|    | |                            
@@ -10,9 +9,6 @@ Website: http://www.euterpea.com
                         | |               
                         |_|               
 
-
-Maintainers:
-  Donya Quick <donyaquick@gmail.com>
 
 Authors:
   Paul Hudak

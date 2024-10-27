@@ -316,20 +316,19 @@ the event is scheduled to happen ``now'', then it is immediately
 played.  Otherwise, it is queued for later.
 
 > deliverMidiEvent :: OutputDeviceID -> MidiEvent -> IO ()
-> deliverMidiEvent devId (t,m) = do
+> deliverMidiEvent devId (t, m) = do
 >   (pChan, out, _stop) <- getOutDev devId
 >   now <- getTimeNow
->   let deliver t m = do
->       if t == 0
->         then out (now,m)
->         else push pChan (now+t) m
->
+>   let deliver t' m' = 
+>         if t' == 0
+>           then out (now, m')
+>           else push pChan (now + t') m'
+> 
 >   case m of
->     Std m -> deliver t m
+>     Std m' -> deliver t m'
 >     ANote c k v d -> do
->         deliver t     (NoteOn c k v)
->         deliver (t+d) (NoteOff c k v)
-
+>       deliver t     (NoteOn c k v)
+>       deliver (t+d) (NoteOff c k v)
 
 outputMidi plays all midi events that are waiting in this device's
 priority queue whose time to play has come.

@@ -1,17 +1,17 @@
+{-# LANGUAGE DeriveFunctor     #-}
+{-# LANGUAGE DeriveGeneric     #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE GADTs             #-}
 {-# LANGUAGE InstanceSigs      #-}
 {-# LANGUAGE TupleSections     #-}
-{-# LANGUAGE DeriveFunctor     #-}
-{-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE GADTs #-}
 
 module Euterpea.Music where
 
-import           Data.Bifunctor (first)
-import           Data.List      (uncons)
-import           Data.Maybe     (fromMaybe)
+import           Data.Bifunctor  (first)
+import           Data.List       (uncons)
 import qualified Data.Map.Strict as Map
-import GHC.Generics
+import           Data.Maybe      (fromMaybe)
+import           GHC.Generics    (Generic)
 
 infixr 5 :+:, :=:
 
@@ -19,6 +19,7 @@ type AbsPitch = Int
 type Octave = Int
 type Pitch = (PitchClass, Octave)
 type Dur   = Rational
+
 data PitchClass  =  Cff | Cf | C | Dff | Cs | Df | Css | D | Eff | Ds
                  |  Ef | Fff | Dss | E | Ff | Es | F | Gff | Ess | Fs
                  |  Gf | Fss | G | Aff | Gs | Af | Gss | A | Bff | As
@@ -51,52 +52,6 @@ data Mode = Major | Minor |
             CustomMode String
   deriving (Show, Eq, Ord)
 
-data InstrumentName =
-     AcousticGrandPiano     | BrightAcousticPiano    | ElectricGrandPiano
-  |  HonkyTonkPiano         | RhodesPiano            | ChorusedPiano
-  |  Harpsichord            | Clavinet               | Celesta
-  |  Glockenspiel           | MusicBox               | Vibraphone
-  |  Marimba                | Xylophone              | TubularBells
-  |  Dulcimer               | HammondOrgan           | PercussiveOrgan
-  |  RockOrgan              | ChurchOrgan            | ReedOrgan
-  |  Accordion              | Harmonica              | TangoAccordion
-  |  AcousticGuitarNylon    | AcousticGuitarSteel    | ElectricGuitarJazz
-  |  ElectricGuitarClean    | ElectricGuitarMuted    | OverdrivenGuitar
-  |  DistortionGuitar       | GuitarHarmonics        | AcousticBass
-  |  ElectricBassFingered   | ElectricBassPicked     | FretlessBass
-  |  SlapBass1              | SlapBass2              | SynthBass1
-  |  SynthBass2             | Violin                 | Viola
-  |  Cello                  | Contrabass             | TremoloStrings
-  |  PizzicatoStrings       | OrchestralHarp         | Timpani
-  |  StringEnsemble1        | StringEnsemble2        | SynthStrings1
-  |  SynthStrings2          | ChoirAahs              | VoiceOohs
-  |  SynthVoice             | OrchestraHit           | Trumpet
-  |  Trombone               | Tuba                   | MutedTrumpet
-  |  FrenchHorn             | BrassSection           | SynthBrass1
-  |  SynthBrass2            | SopranoSax             | AltoSax
-  |  TenorSax               | BaritoneSax            | Oboe
-  |  Bassoon                | EnglishHorn            | Clarinet
-  |  Piccolo                | Flute                  | Recorder
-  |  PanFlute               | BlownBottle            | Shakuhachi
-  |  Whistle                | Ocarina                | Lead1Square
-  |  Lead2Sawtooth          | Lead3Calliope          | Lead4Chiff
-  |  Lead5Charang           | Lead6Voice             | Lead7Fifths
-  |  Lead8BassLead          | Pad1NewAge             | Pad2Warm
-  |  Pad3Polysynth          | Pad4Choir              | Pad5Bowed
-  |  Pad6Metallic           | Pad7Halo               | Pad8Sweep
-  |  FX1Train               | FX2Soundtrack          | FX3Crystal
-  |  FX4Atmosphere          | FX5Brightness          | FX6Goblins
-  |  FX7Echoes              | FX8SciFi               | Sitar
-  |  Banjo                  | Shamisen               | Koto
-  |  Kalimba                | Bagpipe                | Fiddle
-  |  Shanai                 | TinkleBell             | Agogo
-  |  SteelDrums             | Woodblock              | TaikoDrum
-  |  MelodicDrum            | SynthDrum              | ReverseCymbal
-  |  GuitarFretNoise        | BreathNoise            | Seashore
-  |  BirdTweet              | TelephoneRing          | Helicopter
-  |  Applause               | Gunshot                | Percussion
-  |  CustomInstrument String
-  deriving (Show, Eq, Ord)
 
 data PhraseAttribute  =  Dyn Dynamic
                       |  Tmp Tempo
@@ -173,7 +128,7 @@ instance ToMusic1 Note1 where
 
 instance ToMusic1 AbsPitch where
     toMusic1 :: Music AbsPitch -> Music1
-    toMusic1 = fmap (\a -> (pitch a, []))
+    toMusic1 = fmap (\x -> (pitch x, []))
 
 instance ToMusic1 (AbsPitch, Volume) where
     toMusic1 :: Music (AbsPitch, Volume) -> Music1
@@ -363,29 +318,78 @@ dur (m1 :=: m2)          = dur m1 `max` dur m2
 dur (Modify (Tempo r) m) = dur m / r
 dur (Modify _ m)         = dur m
 
-cut :: Dur -> Music a -> Music a
-cut d m | d <= 0            = rest 0
-cut d (Prim (Note oldD p))  =  let d' = max (min oldD d) 0
-                               in if d'>0 then note d' p else rest 0
-cut d (Prim (Rest oldD))    = rest (max (min oldD d) 0)
-cut d (m1 :=: m2)           = cut d m1 :=: cut d m2
-cut d (m1 :+: m2)           =  let  m'1  = cut d m1
-                                    m'2  = cut (d - dur m'1) m2
-                               in   m'1 :+: m'2
-cut d (Modify (Tempo r) m)  = tempo r (cut (d*r) m)
-cut d (Modify c m)          = Modify c (cut d m)
 
+
+-- | The 'cut' function trims a 'Music' structure to a specified duration 'd'.
+--   It effectively limits the music piece's playtime to the provided duration.
+--
+--   This function processes different musical constructs:
+--   - Simple notes and rests.
+--   - Parallel and sequential compositions.
+--   - Modifications such as tempo changes.
+--
+--   Special Cases:
+--   - If 'd' <= 0, the result is a rest with zero duration.
+--   - For parallel (:=:) structures, each component is independently cut to duration 'd'.
+--   - In sequential (:|:) structures, the first part is cut to 'd', and then, if needed,
+--     the remaining duration is applied to subsequent parts.
+--   - Tempo modifications adjust 'd' proportionally when cutting.
+--
+--   Returns:
+--   A new 'Music' object that plays for only up to the requested duration.
+--
+-- >>> cut 2 (note 1 (C,4) :+: note 2 (D,4))
+-- NOW Prim (Note (1 % 1) (C,4)) :+: Prim (Note (1 % 1) (D,4))
+--
+-- >>> cut 1 (note 2 (C,4) :+: note 1 (D,4))
+-- Prim (Note (1 % 1) (C,4)) :+: Prim (Rest (0 % 1))
+cut :: Dur -> Music a -> Music a
+cut dur_ m | dur_ <= 0         = rest 0
+cut dur_ (Prim (Note oldD p))  =  let d' = max (min oldD dur_) 0
+                               in if d'>0 then note d' p else rest 0
+cut dur_ (Prim (Rest oldD))    = rest (max (min oldD dur_) 0)
+cut dur_ (m1 :=: m2)           = cut dur_ m1 :=: cut dur_ m2
+cut dur_ (m1 :+: m2)           =  let  m'1  = cut dur_ m1
+                                       m'2  = cut (dur_ - dur m'1) m2
+                               in   m'1 :+: m'2
+cut dur_ (Modify (Tempo r) m)  = tempo r (cut (dur_*r) m)
+cut dur_ (Modify c m)          = Modify c (cut dur_ m)
+
+
+-- | The 'remove' function traverses a 'Music' structure and subtracts a given duration 'd'
+--   from it. It effectively removes the specified amount of duration from notes and rests
+--   in the music piece. If 'd' is greater than or equal to the duration of a note or rest,
+--   that element is shortened or potentially removed.
+--
+--   This function handles different music constructs:
+--   - Simple notes and rests.
+--   - Parallel and sequential compositions.
+--   - Modifications like tempo changes.
+--
+--   Special Cases:
+--   - If 'd' <= 0, the entire music piece remains unchanged.
+--   - When removing from parallel (:=:) structures, 'd' is applied to both components.
+--   - In sequential (:|:) structures, 'd' is reduced by the duration of each segment before
+--     being applied to subsequent segments.
+--   - Tempo modification is factored into the removal process by adjusting 'd' proportionally.
+--
+--   Returns:
+--   A new 'Music' object with the requested duration removed.
+-- >>> remove 0.5 (note 2 (C,4) :+: note 1 (D,4))
+-- NOW Prim (Note (3 % 2) (C,4)) :+: Prim (Note (1 % 1) (D,4))
+-- >>> remove 1 (note 2 (C,4) :+: note 1 (D,4))
+-- Prim (Note (1 % 1) (C,4)) :+: Prim (Note (1 % 1) (D,4))
 remove :: Dur -> Music a -> Music a
-remove d m | d <= 0            = m
-remove d (Prim (Note oldD p))  =  let d' = max (oldD-d) 0
+remove dur_ m | dur_ <= 0            = m
+remove dur_ (Prim (Note oldD p))  =  let d' = max (oldD-dur_) 0
                                   in  if d'>0 then note d' p else rest 0
-remove d (Prim (Rest oldD))    = rest (max (oldD-d) 0)
-remove d (m1 :=: m2)           = remove d m1 :=: remove d m2
-remove d (m1 :+: m2)           =  let  m'1  = remove d m1
-                                       m'2  = remove (d - dur m1) m2
+remove dur_ (Prim (Rest oldD))    = rest (max (oldD-dur_) 0)
+remove dur_ (m1 :=: m2)           = remove dur_ m1 :=: remove dur_ m2
+remove dur_ (m1 :+: m2)           =  let  m'1  = remove dur_ m1
+                                          m'2  = remove (dur_ - dur m1) m2
                                   in   m'1 :+: m'2
-remove d (Modify (Tempo r) m)  = tempo r (remove (d*r) m)
-remove d (Modify c m)          = Modify c (remove d m)
+remove dur_ (Modify (Tempo r) m)  = tempo r (remove (dur_*r) m)
+remove dur_ (Modify c m)          = Modify c (remove dur_ m)
 
 removeZeros :: Music a -> Music a
 removeZeros (Prim p)      = Prim p
@@ -393,18 +397,18 @@ removeZeros (m1 :+: m2)   =
   let  m'1  = removeZeros m1
        m'2  = removeZeros m2
   in case (m'1,m'2) of
-       (Prim (Note 0 p), m) -> m
+       (Prim (Note 0 _), m) -> m
        (Prim (Rest 0  ), m) -> m
-       (m, Prim (Note 0 p)) -> m
+       (m, Prim (Note 0 _)) -> m
        (m, Prim (Rest 0  )) -> m
        (m1, m2)             -> m1 :+: m2
 removeZeros (m1 :=: m2)   =
   let  m'1  = removeZeros m1
        m'2  = removeZeros m2
   in case (m'1,m'2) of
-       (Prim (Note 0 p), m) -> m
+       (Prim (Note 0 _), m) -> m
        (Prim (Rest 0  ), m) -> m
-       (m, Prim (Note 0 p)) -> m
+       (m, Prim (Note 0 _)) -> m
        (m, Prim (Rest 0  )) -> m
        (m1, m2)             -> m1 :=: m2
 removeZeros (Modify c m)  = Modify c (removeZeros m)
@@ -469,7 +473,7 @@ perc ps dur = instrument Percussion $ note dur (pitch (fromEnum ps + 35))
 
 pMap               :: (a -> b) -> Primitive a -> Primitive b
 pMap f (Note dur_ x) = Note dur_ (f x)
-pMap f (Rest dur_)   = Rest dur_
+pMap _ (Rest dur_)   = Rest dur_
 
 mMap                 :: (a -> b) -> Music a -> Music b
 mMap f (Prim p)     = Prim (pMap f p)
@@ -519,3 +523,185 @@ removeInstruments (Modify c m) = Modify c $ removeInstruments m
 removeInstruments (m1 :+: m2) = removeInstruments m1 :+: removeInstruments m2
 removeInstruments (m1 :=: m2) = removeInstruments m1 :=: removeInstruments m2
 removeInstruments m = m
+
+
+
+data InstrumentName =
+     AcousticGrandPiano     | BrightAcousticPiano    | ElectricGrandPiano
+  |  HonkyTonkPiano         | RhodesPiano            | ChorusedPiano
+  |  Harpsichord            | Clavinet               | Celesta
+  |  Glockenspiel           | MusicBox               | Vibraphone
+  |  Marimba                | Xylophone              | TubularBells
+  |  Dulcimer               | HammondOrgan           | PercussiveOrgan
+  |  RockOrgan              | ChurchOrgan            | ReedOrgan
+  |  Accordion              | Harmonica              | TangoAccordion
+  |  AcousticGuitarNylon    | AcousticGuitarSteel    | ElectricGuitarJazz
+  |  ElectricGuitarClean    | ElectricGuitarMuted    | OverdrivenGuitar
+  |  DistortionGuitar       | GuitarHarmonics        | AcousticBass
+  |  ElectricBassFingered   | ElectricBassPicked     | FretlessBass
+  |  SlapBass1              | SlapBass2              | SynthBass1
+  |  SynthBass2             | Violin                 | Viola
+  |  Cello                  | Contrabass             | TremoloStrings
+  |  PizzicatoStrings       | OrchestralHarp         | Timpani
+  |  StringEnsemble1        | StringEnsemble2        | SynthStrings1
+  |  SynthStrings2          | ChoirAahs              | VoiceOohs
+  |  SynthVoice             | OrchestraHit           | Trumpet
+  |  Trombone               | Tuba                   | MutedTrumpet
+  |  FrenchHorn             | BrassSection           | SynthBrass1
+  |  SynthBrass2            | SopranoSax             | AltoSax
+  |  TenorSax               | BaritoneSax            | Oboe
+  |  Bassoon                | EnglishHorn            | Clarinet
+  |  Piccolo                | Flute                  | Recorder
+  |  PanFlute               | BlownBottle            | Shakuhachi
+  |  Whistle                | Ocarina                | Lead1Square
+  |  Lead2Sawtooth          | Lead3Calliope          | Lead4Chiff
+  |  Lead5Charang           | Lead6Voice             | Lead7Fifths
+  |  Lead8BassLead          | Pad1NewAge             | Pad2Warm
+  |  Pad3Polysynth          | Pad4Choir              | Pad5Bowed
+  |  Pad6Metallic           | Pad7Halo               | Pad8Sweep
+  |  FX1Train               | FX2Soundtrack          | FX3Crystal
+  |  FX4Atmosphere          | FX5Brightness          | FX6Goblins
+  |  FX7Echoes              | FX8SciFi               | Sitar
+  |  Banjo                  | Shamisen               | Koto
+  |  Kalimba                | Bagpipe                | Fiddle
+  |  Shanai                 | TinkleBell             | Agogo
+  |  SteelDrums             | Woodblock              | TaikoDrum
+  |  MelodicDrum            | SynthDrum              | ReverseCymbal
+  |  GuitarFretNoise        | BreathNoise            | Seashore
+  |  BirdTweet              | TelephoneRing          | Helicopter
+  |  Applause               | Gunshot                | Percussion
+  |  CustomInstrument String
+  deriving (Show, Eq, Ord)
+
+
+
+  {-
+
+-- | PitchClass represents musical notes including quarter tones
+-- Each note can be:
+-- Double flat (ff), Flat-and-a-quarter (fq), Flat (f), Quarter-flat (qf)
+-- Natural (n), Quarter-sharp (qs), Sharp (s), Sharp-and-a-quarter (sq), Double sharp (ss)
+data PitchClass =
+    Cff  | Cfq  | Cf   | Cqf  | C    | Cqs  | Cs   | Csq  | Css  |
+    Dff  | Dfq  | Df   | Dqf  | D    | Dqs  | Ds   | Dsq  | Dss  |
+    Eff  | Efq  | Ef   | Eqf  | E    | Eqs  | Es   | Esq  | Ess  |
+    Fff  | Ffq  | Ff   | Fqf  | F    | Fqs  | Fs   | Fsq  | Fss  |
+    Gff  | Gfq  | Gf   | Gqf  | G    | Gqs  | Gs   | Gsq  | Gss  |
+    Aff  | Afq  | Af   | Aqf  | A    | Aqs  | As   | Asq  | Ass  |
+    Bff  | Bfq  | Bf   | Bqf  | B    | Bqs  | Bs   | Bsq  | Bss
+    deriving (Show, Eq, Ord, Read, Enum, Bounded)
+
+-- Updated pitch conversion map to handle quarter tones
+-- Each quarter step is represented by 0.5 in the conversion
+pcToIntMap :: Map.Map PitchClass Double
+pcToIntMap = Map.fromList [
+    -- C and variants (from double-flat to double-sharp)
+    (Cff, -2.0), (Cfq, -1.75), (Cf, -1.5), (Cqf, -1.25), (C, 0.0),
+    (Cqs, 0.25), (Cs, 0.5),    (Csq, 0.75), (Css, 1.0),
+
+    -- D and variants
+    (Dff, 0.0),  (Dfq, 0.25),  (Df, 0.5),   (Dqf, 0.75), (D, 1.0),
+    (Dqs, 1.25), (Ds, 1.5),    (Dsq, 1.75), (Dss, 2.0),
+
+    -- E and variants
+    (Eff, 2.0),  (Efq, 2.25),  (Ef, 2.5),   (Eqf, 2.75), (E, 3.0),
+    (Eqs, 3.25), (Es, 3.5),    (Esq, 3.75), (Ess, 4.0),
+
+    -- F and variants
+    (Fff, 3.0),  (Ffq, 3.25),  (Ff, 3.5),   (Fqf, 3.75), (F, 4.0),
+    (Fqs, 4.25), (Fs, 4.5),    (Fsq, 4.75), (Fss, 5.0),
+
+    -- G and variants
+    (Gff, 5.0),  (Gfq, 5.25),  (Gf, 5.5),   (Gqf, 5.75), (G, 6.0),
+    (Gqs, 6.25), (Gs, 6.5),    (Gsq, 6.75), (Gss, 7.0),
+
+    -- A and variants
+    (Aff, 7.0),  (Afq, 7.25),  (Af, 7.5),   (Aqf, 7.75), (A, 8.0),
+    (Aqs, 8.25), (As, 8.5),    (Asq, 8.75), (Ass, 9.0),
+
+    -- B and variants
+    (Bff, 9.0),  (Bfq, 9.25),  (Bf, 9.5),   (Bqf, 9.75), (B, 10.0),
+    (Bqs, 10.25), (Bs, 10.5),  (Bsq, 10.75), (Bss, 11.0)
+  ]
+
+-- Quarter tone helper functions
+cff, cfq, cf, cqf, c, cqs, cs, csq, css,
+dff, dfq, df, dqf, d, dqs, ds, dsq, dss,
+eff, efq, ef, eqf, e, eqs, es, esq, ess,
+fff, ffq, ff, fqf, f, fqs, fs, fsq, fss,
+gff, gfq, gf, gqf, g, gqs, gs, gsq, gss,
+aff, afq, af, aqf, a, aqs, as, asq, ass,
+bff, bfq, bf, bqf, b, bqs, bs, bsq, bss :: Octave -> Dur -> Music Pitch
+
+-- C family
+cff o d = note d (Cff, o); cfq o d = note d (Cfq, o)
+cf  o d = note d (Cf,  o); cqf o d = note d (Cqf, o)
+c   o d = note d (C,   o); cqs o d = note d (Cqs, o)
+cs  o d = note d (Cs,  o); csq o d = note d (Csq, o)
+css o d = note d (Css, o)
+
+-- D family
+dff o d = note d (Dff, o); dfq o d = note d (Dfq, o)
+df  o d = note d (Df,  o); dqf o d = note d (Dqf, o)
+d   o d = note d (D,   o); dqs o d = note d (Dqs, o)
+ds  o d = note d (Ds,  o); dsq o d = note d (Dsq, o)
+dss o d = note d (Dss, o)
+
+-- E family
+eff o d = note d (Eff, o); efq o d = note d (Efq, o)
+ef  o d = note d (Ef,  o); eqf o d = note d (Eqf, o)
+e   o d = note d (E,   o); eqs o d = note d (Eqs, o)
+es  o d = note d (Es,  o); esq o d = note d (Esq, o)
+ess o d = note d (Ess, o)
+
+-- F family
+fff o d = note d (Fff, o); ffq o d = note d (Ffq, o)
+ff  o d = note d (Ff,  o); fqf o d = note d (Fqf, o)
+f   o d = note d (F,   o); fqs o d = note d (Fqs, o)
+fs  o d = note d (Fs,  o); fsq o d = note d (Fsq, o)
+fss o d = note d (Fss, o)
+
+-- G family
+gff o d = note d (Gff, o); gfq o d = note d (Gfq, o)
+gf  o d = note d (Gf,  o); gqf o d = note d (Gqf, o)
+g   o d = note d (G,   o); gqs o d = note d (Gqs, o)
+gs  o d = note d (Gs,  o); gsq o d = note d (Gsq, o)
+gss o d = note d (Gss, o)
+
+-- A family
+aff o d = note d (Aff, o); afq o d = note d (Afq, o)
+af  o d = note d (Af,  o); aqf o d = note d (Aqf, o)
+a   o d = note d (A,   o); aqs o d = note d (Aqs, o)
+as  o d = note d (As,  o); asq o d = note d (Asq, o)
+ass o d = note d (Ass, o)
+
+-- B family
+bff o d = note d (Bff, o); bfq o d = note d (Bfq, o)
+bf  o d = note d (Bf,  o); bqf o d = note d (Bqf, o)
+b   o d = note d (B,   o); bqs o d = note d (Bqs, o)
+bs  o d = note d (Bs,  o); bsq o d = note d (Bsq, o)
+bss o d = note d (Bss, o)
+
+-- Updated pitch conversion for quarter tones
+-- Now using Double for more precise pitch calculations
+type AbsPitch = Double
+
+absPitch :: Pitch -> AbsPitch
+absPitch (pc, oct) = 12 * fromIntegral (oct + 1) + fromMaybe 0 (Map.lookup pc pcToIntMap)
+
+-- Convert absolute pitch back to Pitch, handling quarter tones
+pitch :: AbsPitch -> Pitch
+pitch ap =
+    let (oct, remainder) = properFraction (ap / 12)
+        quartertoneVal = remainder * 12
+        pc = findClosestPitch quartertoneVal
+    in (pc, oct - 1)
+  where
+    findClosestPitch val =
+        fst $ minimumBy (comparing (abs . subtract val . snd)) (Map.toList pcToIntMap)
+
+-- Updated transposition to handle quarter tones
+trans :: Double -> Pitch -> Pitch
+trans i p = pitch (absPitch p + i)
+
+  -}

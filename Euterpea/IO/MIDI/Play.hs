@@ -80,7 +80,7 @@ defParams = PlayParams False (linearCP 16 9) Nothing 1.0 perform1
 
 play :: (ToMusic1 a, NFData a, Enum InstrumentName) => Music a -> IO ()
 play = playC defParams{perfAlg=fixPerf} where
-    fixPerf = map (\e -> e{eDur = max 0 (eDur e - 0.000001)}) . perform
+    fixPerf = fmap (\e -> e{eDur = max 0 (eDur e - 0.000001)}) . perform
 
 playS :: (ToMusic1 a, NFData a, Enum InstrumentName) => Music a -> IO ()
 playS = playC defParams{strict=True}

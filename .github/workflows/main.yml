@@ -1,0 +1,8 @@
+jobs:
+  my_first_job:
+    runs-on: ubuntu-latest  
+    steps:
+      - uses: actions/checkout@v3  
+      - name: Run Stan Analysis
+        uses: kowainik/stan-action@v0
+        uses: kowainik/stan-action@b1cca2e51efed6da654161f2ede383ac35062953

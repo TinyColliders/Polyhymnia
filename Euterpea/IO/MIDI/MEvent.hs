@@ -2,19 +2,8 @@
 
 module Euterpea.IO.MIDI.MEvent where
 
--- Import the Euterpea library to utilize musical constructs and functionality.
 import Euterpea.Music
 import GHC.Generics (Generic)
-
--- | Data type representing a musical event (MEvent).
--- data MEvent = MEvent {
---     eTime    :: PTime,          -- ^ Onset time of the event.
---     eInst    :: InstrumentName, -- ^ Instrument associated with the event.
---     ePitch   :: AbsPitch,       -- ^ Pitch number of the note.
---     eDur     :: DurT,           -- ^ Duration of the note.
---     eVol     :: Volume,         -- ^ Volume (loudness) of the note.
---     eParams  :: [Double]        -- ^ Optional list of other parameters.
--- } deriving (Show, Eq, Ord)      -- ^ Automatically derive Show, Eq, and Ord instances.
 
 data MEvent = MEvent {
     eTime    :: {-# UNPACK #-} !PTime,
@@ -24,21 +13,6 @@ data MEvent = MEvent {
     eVol     :: {-# UNPACK #-} !Volume,
     eParams  :: ![Double]  
 } deriving (Eq, Generic) 
-
--- data MEvent = MEvent {
---     eTime    :: {-# UNPACK #-} !PTime,
---     eInst    :: !InstrumentName,
---     ePitch   :: {-# UNPACK #-} !AbsPitch,
---     eDur     :: {-# UNPACK #-} !DurT,
---     eVol     :: {-# UNPACK #-} !Volume,
---     eParams  :: !(V.Vector Double)  -- Using Vector instead of list
--- } deriving Eq
-
--- Make MEvent an instance of NFData for better strictness
--- instance NFData MEvent where
---     rnf :: MEvent -> ()
---     rnf (MEvent t i p d v ps) = 
---         t `seq` i `seq` p `seq` d `seq` v `seq` V.force ps `seq` ()
 
 
 -- | A performance is a list of musical events (MEvents).
@@ -84,6 +58,7 @@ perform1Dur = musicToMEvents defCon . applyControls where
     metro :: Int -> Dur -> DurT
     metro setting dur_ = 60 / (fromIntegral setting * dur_)
 
+
 -- | Apply musical controls such as tempo and transposition recursively to a Music1 structure.
 applyControls :: Music1 -> Music1
 applyControls (Modify (Tempo r) m) = scaleDurations r $ applyControls m
@@ -92,6 +67,7 @@ applyControls (Modify x m) = Modify x $ applyControls m
 applyControls (m1 :+: m2) = applyControls m1 :+: applyControls m2
 applyControls (m1 :=: m2) = applyControls m1 :=: applyControls m2
 applyControls x = x
+
 
 -- | Convert a Music1 structure to a list of MEvents and compute its duration.
 musicToMEvents :: MContext -> Music1 -> (Performance, DurT)
@@ -111,15 +87,6 @@ musicToMEvents c (Modify (KeySig x y) m) = musicToMEvents c m -- ^ Key signature
 musicToMEvents c (Modify (Custom x) m) = musicToMEvents c m   -- ^ Custom modifications are ignored.
 musicToMEvents c m@(Modify x m') = musicToMEvents c $ applyControls m -- ^ Transpose and tempo addressed by applyControls.
 
--- | Convert a single note with duration and pitch into an MEvent, considering the current context.
--- noteToMEvent :: MContext -> Dur -> (Pitch, [NoteAttribute]) -> MEvent
--- noteToMEvent c@(MContext ct ci cdur cvol) d (p, nas) =
---     let e0 = MEvent{eTime=ct, ePitch=absPitch p, eInst=ci, eDur=d*cdur, eVol=cvol, eParams=[]}
---     in  foldr nasFun e0 nas where  -- ^ Apply any note attributes.
---     nasFun :: NoteAttribute -> MEvent -> MEvent
---     nasFun (Volume v) ev = ev {eVol = v}
---     nasFun (Params pms) ev = ev {eParams = pms}
---     nasFun _ ev = ev
 
 -- | Convert a single note with duration and pitch into an MEvent, considering the current context.
 noteToMEvent :: MContext -> Dur -> (Pitch, [NoteAttribute]) -> MEvent
@@ -141,46 +108,6 @@ noteToMEvent MContext{mcTime=ct, mcInst=ci, mcDur=cdur, mcVol=cvol} d (p, nas) =
     applyNoteAttribute _ ev = ev
 
 
--- -- | Convert a phrase into a set of MEvents, applying various phrase attributes like dynamics or tempo changes.
--- phraseToMEvents :: MContext -> [PhraseAttribute] -> Music1 -> (Performance, DurT)
--- phraseToMEvents c [] m = musicToMEvents c m
--- phraseToMEvents c@MContext{mcTime=t, mcInst=i, mcDur=dt} (pa:pas) m =
---  let  pfd@(pf,dur)  =  phraseToMEvents c pas m
---       loud x        =  phraseToMEvents c (Dyn (Loudness x) : pas) m
---       stretch x     =  let  t0 = eTime (head pf);  r  = x/dur
---                             upd e@MEvent {eTime = t, eDur = d} =
---                               let  dt  = t-t0
---                                    t'  = (1+dt*r)*dt + t0
---                                    d'  = (1+(2*dt+d)*r)*d
---                               in e {eTime = t', eDur = d'}
---                        in (map upd pf, (1+x)*dur)
---       inflate x     =  let  t0  = eTime (head pf);
---                             r   = x/dur
---                             upd e@MEvent {eTime = t, eVol = v} =
---                                 e {eVol =  round ((1+(t-t0)*r) * fromIntegral v)}
---                        in (map upd pf, dur)
---  in case pa of
---    Dyn (Accent x) ->
---        ( map (\e-> e {eVol = round (x * fromIntegral (eVol e))}) pf, dur)
---    Dyn (StdLoudness l) -> -- ^ Handle standard loudness levels.
---        case l of
---           PPP  -> loud 40;       PP -> loud 50;   P    -> loud 60
---           MP   -> loud 70;       SF -> loud 80;   MF   -> loud 90
---           NF   -> loud 100;      FF -> loud 110;  FFF  -> loud 120
---    Dyn (Loudness x)     ->  phraseToMEvents c{mcVol = round x} pas m
---    Dyn (Crescendo x)    ->  inflate   x ; Dyn (Diminuendo x)  -> inflate (-x)
---    Tmp (Ritardando x)   ->  stretch   x ; Tmp (Accelerando x) -> stretch (-x)
---    Art (Staccato x)     ->  (map (\e-> e {eDur = x * eDur e}) pf, dur)
---    Art (Legato x)       ->  (map (\e-> e {eDur = x * eDur e}) pf, dur)
---    Art (Slurred x)      ->
---        let  lastStartTime  = foldr (max . eTime) 0 pf -- ^ Calculate the latest start time in the phrase.
---             setDur e       = if eTime e < lastStartTime
---                              then e {eDur = x * eDur e} -- ^ Adjust duration for all events before the last one.
---                              else e
---        in (map setDur pf, dur)
---    Art _                -> pfd -- ^ Unsupported articulation types are ignored.
---    Orn _                -> pfd -- ^ Ornaments are not supported and thus ignored.
-  
 
 -- | Convert a phrase into a set of MEvents, applying various phrase attributes like dynamics or tempo changes.
 phraseToMEvents :: MContext -> [PhraseAttribute] -> Music1 -> (Performance, DurT)

@@ -109,14 +109,7 @@ playStrict p m = m `deepseq`
     let x = toMidi (perfAlg p $ toMusic1 m)
     in  x `deepseq` playM' (devID p) x
 
--- playM' :: Maybe OutputDeviceID -> Midi -> IO ()
--- playM' devID_ midi = handleCtrlC $ do
---     initialize
---     maybe (defaultOutput playMidi) playMidi devID_ midi
---     terminate
---     return () where
---     handleCtrlC :: IO a -> IO a
---     handleCtrlC op = onException op terminate
+
 playM' :: Maybe OutputDeviceID -> Midi -> IO ()
 playM' devID_ midi = handleCtrlC $ do
     initialize
@@ -131,12 +124,6 @@ playM' devID_ midi = handleCtrlC $ do
     handleCtrlC :: IO a -> IO a
     handleCtrlC op = onException op (void terminate)
 
--- Ensure any functions like 'initialize', 'defaultOutput', 'playMidi', and 'terminate'
--- are properly defined and handle their respective types.
-
-
--- Ensure 'playMidi', 'defaultOutput', 'initialize', and 'terminate' 
--- are correctly implemented and compatible with expected types.
 
 
 playInf :: (ToMusic1 a, Enum InstrumentName) => PlayParams -> Music a -> IO ()

@@ -32,8 +32,8 @@ toMidiUPM2 :: UserPatchMap -> [MEvent] -> Midi
 toMidiUPM2 upm pf =
    let split     = resolveMEventInsts $ splitByInst pf
        insts     = map fst split
-       rightMap  =  if (allValid upm insts) then upm
-                    else (makeGMMap insts)
+       rightMap  =  if allValid upm insts then upm
+                    else makeGMMap insts
    in Midi  (if length split == 1  then SingleTrack
                                    else MultiTrack)
             (TicksPerBeat division)

@@ -1,14 +1,12 @@
 
 {-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE TupleSections #-}
-{-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
-{-# HLINT ignore "Eta reduce" #-}
-{-# LANGUAGE InstanceSigs #-}
+{-# LANGUAGE InstanceSigs      #-}
+{-# LANGUAGE TupleSections     #-}
 
 module Euterpea.Music where
 
-import Data.Bifunctor (first)
-import Data.List (uncons)
+import           Data.Bifunctor (first)
+import           Data.List      (uncons)
 
 infixr 5 :+:, :=:
 
@@ -148,7 +146,7 @@ type Music1  = Music Note1
 
 class ToMusic1 a where
     toMusic1 :: Music a -> Music1
-    
+
 instance ToMusic1 Pitch where
     toMusic1 :: Music Pitch -> Music1
     toMusic1 = mMap (, [])
@@ -347,8 +345,8 @@ retroInvert  = retro  . invert
 invertRetro  = invert . retro
 
 dur                       :: Music a -> Dur
-dur (Prim (Note dur_ _))    = dur_
-dur (Prim (Rest dur_))      = dur_
+dur (Prim (Note dur_ _)) = dur_
+dur (Prim (Rest dur_))   = dur_
 dur (m1 :+: m2)          = dur m1   +   dur m2
 dur (m1 :=: m2)          = dur m1 `max` dur m2
 dur (Modify (Tempo r) m) = dur m / r

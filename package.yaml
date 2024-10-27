@@ -1,6 +1,6 @@
-name:                my-euterpea
+name:                euterpea
 version:             0.1.0.0
-github:              "githubuser/my-euterpea"
+github:              "githubuser/euterpea"
 license:             BSD-3-Clause
 author:              "Author name here"
 maintainer:          "example@example.com"
@@ -61,3 +61,4 @@ library:
     - containers 
     - bytestring
     - heap 
+    - vector

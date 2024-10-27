@@ -1,5 +1,3 @@
--- ==========================================================================================
--- Conversion to MEvent datatype
 
 > module Euterpea.IO.MIDI.MEvent where
 > import Euterpea.Music

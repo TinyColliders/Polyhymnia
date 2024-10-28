@@ -3,6 +3,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs             #-}
 {-# LANGUAGE InstanceSigs      #-}
+{-# LANGUAGE LambdaCase        #-}
 {-# LANGUAGE TupleSections     #-}
 
 module Euterpea.Music where
@@ -37,6 +38,13 @@ data Music a where
   (:=:) :: Music a -> Music a -> Music a
   Modify :: Control -> (Music a) -> Music a
   deriving (Show, Eq, Ord, Functor)
+
+-- instance Functor Music where
+--     fmap = mMap  -- or directly:
+--     fmap f (Prim p) = Prim (fmap f p)        -- Note: uses Primitive's Functor instance
+--     fmap f (m1 :+: m2) = fmap f m1 :+: fmap f m2
+--     fmap f (m1 :=: m2) = fmap f m1 :=: fmap f m2
+--     fmap f (Modify c m) = Modify c (fmap f m)
 
 data Control where
   Tempo :: Rational -> Control
@@ -255,13 +263,7 @@ invertAt pRef = fmap (\p -> pitch (2 * absPitch pRef - absPitch p))
 invertAt1 :: Pitch -> Music (Pitch, a) -> Music (Pitch, a)
 invertAt1 pRef = fmap (\(p,x) -> (pitch (2 * absPitch pRef - absPitch p),x))
 
--- invert :: Music Pitch -> Music Pitch
--- invert m =
---     let pRef = mFold pFun (++) (++) (flip const) m
---     in  if null pRef then m -- no pitches in the structure!
---         else invertAt (head pRef) m
---     where pFun (Note d p) = [p]
---           pFun _          = []
+
 invert :: Music Pitch -> Music Pitch
 invert m =
     let pRef = mFold pFun (++) (++) (\_ x -> x) m
@@ -280,21 +282,6 @@ invert1 m =
     where pFun (Note _ (p,_)) = [p]
           pFun _              = []
 
--- invert1 :: Music (Pitch, a) -> Music (Pitch, a)
--- invert1 m =
---     let pRef = mFold pFun (++) (++) (\_ x -> x) m
---     in if null pRef then m -- no pitches!
---        else invertAt1 (head pRef) m
---     where pFun (Note _ (p,_)) = [p]
---           pFun _              = []
-
--- invert1 :: Music (Pitch,a) -> Music (Pitch,a)
--- invert1 m =
---     let pRef = mFold pFun (++) (++) (flip const) m
---     in  if null pRef then m -- no pitches!
---         else invertAt1 (head pRef) m
---     where pFun (Note d (p,x)) = [p]
---           pFun _              = []
 
 retro               :: Music a -> Music a
 retro n@(Prim _)    = n
@@ -310,15 +297,18 @@ retroInvert, invertRetro :: Music Pitch -> Music Pitch
 retroInvert  = retro  . invert
 invertRetro  = invert . retro
 
-dur                       :: Music a -> Dur
-dur (Prim (Note dur_ _)) = dur_
-dur (Prim (Rest dur_))   = dur_
-dur (m1 :+: m2)          = dur m1   +   dur m2
-dur (m1 :=: m2)          = dur m1 `max` dur m2
-dur (Modify (Tempo r) m) = dur m / r
-dur (Modify _ m)         = dur m
 
-
+dur :: Music a -> Dur
+dur music = case music of
+    Prim p             -> primDur p
+    m1 :+: m2          -> dur m1 + dur m2
+    m1 :=: m2          -> dur m1 `max` dur m2
+    Modify (Tempo r) m -> dur m / r
+    Modify _ m         -> dur m
+  where
+    primDur :: Primitive a -> Dur
+    primDur (Note dur_ _) = dur_
+    primDur (Rest dur_)   = dur_
 
 -- | The 'cut' function trims a 'Music' structure to a specified duration 'd'.
 --   It effectively limits the music piece's playtime to the provided duration.
@@ -391,64 +381,226 @@ remove dur_ (m1 :+: m2)           =  let  m'1  = remove dur_ m1
 remove dur_ (Modify (Tempo r) m)  = tempo r (remove (dur_*r) m)
 remove dur_ (Modify c m)          = Modify c (remove dur_ m)
 
+
+
+-- | The 'removeZeros' function simplifies a 'Music' structure by eliminating
+--   zero-duration notes and rests. It retains the same musical structure but
+--   without elements that contribute nothing to the duration of the piece.
+--
+--   This operation can optimize musical pieces by omitting unnecessary components,
+--   leading to potentially more efficient processing or simpler music structures.
+--
+--   Parameters:
+--   - m: The 'Music' object from which zero-duration notes and rests will be removed.
+--
+--   Returns:
+--   A new 'Music' object that excludes all zero-duration elements while preserving
+--   the original musical relationships and hierarchy.
+-- >>> removeZeros (note 0 (C,4) :+: note 1 (D,4))
+-- Prim (Note (1 % 1) (D,4))
+
 removeZeros :: Music a -> Music a
-removeZeros (Prim p)      = Prim p
-removeZeros (m1 :+: m2)   =
-  let  m'1  = removeZeros m1
-       m'2  = removeZeros m2
-  in case (m'1,m'2) of
-       (Prim (Note 0 _), m) -> m
-       (Prim (Rest 0  ), m) -> m
-       (m, Prim (Note 0 _)) -> m
-       (m, Prim (Rest 0  )) -> m
-       (m1, m2)             -> m1 :+: m2
-removeZeros (m1 :=: m2)   =
-  let  m'1  = removeZeros m1
-       m'2  = removeZeros m2
-  in case (m'1,m'2) of
-       (Prim (Note 0 _), m) -> m
-       (Prim (Rest 0  ), m) -> m
-       (m, Prim (Note 0 _)) -> m
-       (m, Prim (Rest 0  )) -> m
-       (m1, m2)             -> m1 :=: m2
-removeZeros (Modify c m)  = Modify c (removeZeros m)
+removeZeros = \case
+    Prim p -> Prim p
+    m1 :+: m2 -> combineMusicWithZeros (:+:) m1 m2
+    m1 :=: m2 -> combineMusicWithZeros (:=:) m1 m2
+    Modify c_ m -> Modify c_ (removeZeros m)
+  where
+    combineMusicWithZeros :: (Music a -> Music a -> Music a)
+                         -> Music a -> Music a -> Music a
+    combineMusicWithZeros op m1 m2 =
+        case (removeZeros m1, removeZeros m2) of
+            (Prim (Note 0 _), m) -> m
+            (Prim (Rest 0), m)   -> m
+            (m, Prim (Note 0 _)) -> m
+            (m, Prim (Rest 0))   -> m
+            (m1', m2')           -> m1' `op` m2'
+
+-- | The 'durL' function calculates the lazy list of durations for each segment
+-- within a 'Music' composition. It provides a timeline view, allowing us to
+-- determine cumulative durations efficiently.
+--
+-- For parallel compositions, this function merges individual duration lists,
+-- recognizing that they play simultaneously. Sequential compositions concatenate
+-- the durations, incrementing them as segments are processed in sequence.
+--
+-- Examples:
+-- >>> durL (note 1 (C,4) :+: note 2 (D,4))
+-- NOW [1 % 1,3 % 1]
+-- >>> durL (note qn (C,4))
+-- NOW [1 % 4]
+-- >>>  durL (note qn (C,4) :+: note hn (D,4))
+-- [1 % 4,3 % 4]
 
 type LazyDur = [Dur]
-durL :: Music a -> LazyDur
-durL m@(Prim _)            =  [dur m]
-durL (m1 :+: m2)           =  let d1 = durL m1
-                              in d1 ++ map (+last d1) (durL m2)
-durL (m1 :=: m2)           =  mergeLD (durL m1) (durL m2)
-durL (Modify (Tempo r) m)  =  map (/r) (durL m)
-durL (Modify _ m)          =  durL m
 
+durL :: Music a -> LazyDur
+durL = \case
+    -- Single primitive: just its duration
+    Prim p -> [dur (Prim p)]
+
+    -- Sequential composition: accumulate durations
+    m1 :+: m2 -> let d1 = durL m1
+                     lastD = last d1
+                 in d1 ++ map (+ lastD) (durL m2)
+
+    -- Parallel composition: merge duration lists
+    m1 :=: m2 -> mergeLD (durL m1) (durL m2)
+
+    -- Tempo modification: scale all durations
+    Modify (Tempo r) m -> map (/ r) (durL m)
+
+    -- Other modifications: pass through
+    Modify _ m -> durL m
+
+-- | Merges two duration lists for parallel composition, preserving
+-- all timing points from both sequences. The result contains all
+-- durations from both lists in order, maintaining the timeline of
+-- both parts playing simultaneously.
+--
+-- Parameters:
+-- - List 1: First duration list (LazyDur)
+-- - List 2: Second duration list (LazyDur)
+--
+-- Returns:
+-- A merged LazyDur containing all timing points from both lists
+-- in chronological order.
+--
+-- Examples:
+-- >>> mergeLD [1/4, 1/2] [1/4, 3/4]
+-- WAS WAS [1 % 4, 1 % 4, 1 % 2, 3 % 4]
+-- WAS NOW [1 % 4,1 % 4,1 % 2,3 % 4]
+-- NOW [1 % 4,1 % 4,1 % 2,3 % 4]
+-- >>> mergeLD [1/2] [1/4, 1/2]
+-- WAS WAS [1 % 4, 1 % 2, 1 % 2]
+-- WAS NOW [1 % 4,1 % 2,1 % 2]
+-- NOW [1 % 4,1 % 2,1 % 2]
+--
+-- Note: Duplicate timing points are preserved to maintain the structure
+-- of both original timelines.
 mergeLD :: LazyDur -> LazyDur -> LazyDur
-mergeLD [] ld = ld
-mergeLD ld [] = ld
+mergeLD [] ld = ld                      -- If first list empty, use second
+mergeLD ld [] = ld                      -- If second list empty, use first
 mergeLD ld1@(d1:ds1) ld2@(d2:ds2) =
-  if d1<d2  then  d1 : mergeLD ds1 ld2
-            else  d2 : mergeLD ld1 ds2
+    if d1 < d2 then d1 : mergeLD ds1 ld2  -- Take smaller duration and continue
+             else d2 : mergeLD ld1 ds2  -- Preserves all timing points
+
+-- removeZeros :: Music a -> Music a
+-- removeZeros (Prim p)      = Prim p
+-- removeZeros (m1 :+: m2)   =
+--   let  m'1  = removeZeros m1
+--        m'2  = removeZeros m2
+--   in case (m'1,m'2) of
+--        (Prim (Note 0 _), m) -> m
+--        (Prim (Rest 0  ), m) -> m
+--        (m, Prim (Note 0 _)) -> m
+--        (m, Prim (Rest 0  )) -> m
+--        (m1, m2)             -> m1 :+: m2
+-- removeZeros (m1 :=: m2)   =
+--   let  m'1  = removeZeros m1
+--        m'2  = removeZeros m2
+--   in case (m'1,m'2) of
+--        (Prim (Note 0 _), m) -> m
+--        (Prim (Rest 0  ), m) -> m
+--        (m, Prim (Note 0 _)) -> m
+--        (m, Prim (Rest 0  )) -> m
+--        (m1, m2)             -> m1 :=: m2
+-- removeZeros (Modify c m)  = Modify c (removeZeros m)
+
+-- type LazyDur = [Dur]
+-- durL :: Music a -> LazyDur
+-- durL m@(Prim _)            =  [dur m]
+-- durL (m1 :+: m2)           =  let d1 = durL m1
+--                               in d1 ++ map (+last d1) (durL m2)
+-- durL (m1 :=: m2)           =  mergeLD (durL m1) (durL m2)
+-- durL (Modify (Tempo r) m)  =  map (/r) (durL m)
+-- durL (Modify _ m)          =  durL m
+
+-- mergeLD :: LazyDur -> LazyDur -> LazyDur
+-- mergeLD [] ld = ld
+-- mergeLD ld [] = ld
+-- mergeLD ld1@(d1:ds1) ld2@(d2:ds2) =
+--   if d1<d2  then  d1 : mergeLD ds1 ld2
+--             else  d2 : mergeLD ld1 ds2
+
+
+-- | The 'minL' function computes the minimum duration from a list of durations
+--   ('LazyDur') comparing each to a given reference duration ('Dur').
+--
+--   This function serves to determine the smallest duration that should be used
+--   when modifying or generating new music constructs.
+--
+--   Parameters:
+--   - ld: A 'LazyDur', which is a list of durations.
+--   - d': A reference 'Dur' against which the elements of 'ld' are compared.
+--
+--   Returns:
+--   The smallest 'Dur' found in the comparison between elements of 'ld' and 'd'.
+-- >>> minL [1 / 1, 3 / 1] (1 / 2)
+-- 1 % 2
 
 minL :: LazyDur -> Dur -> Dur
 minL []      d' = d'
 minL [d]     d' = min d d'
 minL (d:ds)  d' = if d < d' then minL ds d' else d'
 
-cutL :: LazyDur -> Music a -> Music a
-cutL [] m                     = rest 0
-cutL (d:ds) m | d <= 0        = cutL ds m
-cutL ld (Prim (Note oldD p))  = note (minL ld oldD) p
-cutL ld (Prim (Rest oldD))    = rest (minL ld oldD)
-cutL ld (m1 :=: m2)           = cutL ld m1 :=: cutL ld m2
-cutL ld (m1 :+: m2)           =
-   let  m'1 = cutL ld m1
-        m'2 = cutL (map (\d -> d - dur m'1) ld) m2
-   in m'1 :+: m'2
-cutL ld (Modify (Tempo r) m)  = tempo r (cutL (map (*r) ld) m)
-cutL ld (Modify c m)          = Modify c (cutL ld m)
 
-(/=:)      :: Music a -> Music a -> Music a
-m1 /=: m2  = cutL (durL m2) m1 :=: cutL (durL m1) m2
+
+
+-- | Cut a piece of music according to a list of durations
+-- This function adjusts the duration of each segment of music
+-- based on the provided timeline
+-- >>> cutL [1 / 1, 1 / 1] (note 1 (C,4) :+: note 1 (D,4))
+-- Prim (Note (1 % 1) (C,4)) :+: Prim (Rest (0 % 1))
+-- >>> cutL [2 / 1, 1 / 1] (note 1 (C,4) :+: note 2 (D,4))
+-- WAS WAS NOW Prim (Note (1 % 1) (C,4)) :+: Prim (Note (0 % 1) (D,4))
+-- WAS NOW Prim (Note (1 % 1) (C,4)) :+: Prim (Note (0 % 1) (D,4))
+-- NOW Prim (Note (1 % 1) (C,4)) :+: Prim (Note (0 % 1) (D,4))
+cutL :: LazyDur -> Music a -> Music a
+cutL [] _ = rest 0
+cutL (d:ds) m | d <= 0 = cutL ds m
+cutL ld m = case m of
+    -- Base cases: Notes and Rests
+    Prim (Note oldD p) -> note (minL ld oldD) p
+    Prim (Rest oldD)   -> rest (minL ld oldD)
+
+    -- Parallel composition: cut both parts to same timeline
+    m1 :=: m2 -> cutL ld m1 :=: cutL ld m2
+
+    -- Sequential composition: adjust timeline for second part
+    m1 :+: m2 -> let m'1 = cutL ld m1
+                     remainingDur = fmap (subtractDur (dur m'1)) ld
+                     m'2 = cutL remainingDur m2
+                 in m'1 :+: m'2
+
+    -- Handle tempo modifications
+    Modify (Tempo r) m -> tempo r (cutL (fmap (*r) ld) m)
+    Modify c m        -> Modify c (cutL ld m)
+  where
+    subtractDur :: Dur -> Dur -> Dur
+    subtractDur d1 d2 = d2 - d1
+
+-- | Combine two pieces of music in parallel, cutting each to match
+-- the duration of the other part
+(/=:) :: Music a -> Music a -> Music a
+m1 /=: m2 = cutL (durL m2) m1 :=: cutL (durL m1) m2
+
+
+-- cutL :: LazyDur -> Music a -> Music a
+-- cutL [] m                     = rest 0
+-- cutL (d:ds) m | d <= 0        = cutL ds m
+-- cutL ld (Prim (Note oldD p))  = note (minL ld oldD) p
+-- cutL ld (Prim (Rest oldD))    = rest (minL ld oldD)
+-- cutL ld (m1 :=: m2)           = cutL ld m1 :=: cutL ld m2
+-- cutL ld (m1 :+: m2)           =
+--    let  m'1 = cutL ld m1
+--         m'2 = cutL (map (\d -> d - dur m'1) ld) m2
+--    in m'1 :+: m'2
+-- cutL ld (Modify (Tempo r) m)  = tempo r (cutL (map (*r) ld) m)
+-- cutL ld (Modify c m)          = Modify c (cutL ld m)
+
+-- (/=:)      :: Music a -> Music a -> Music a
+-- m1 /=: m2  = cutL (durL m2) m1 :=: cutL (durL m1) m2
 
 data PercussionSound =
         AcousticBassDrum  --  MIDI Key 35
@@ -487,6 +639,17 @@ mMap f (Modify c m) = Modify c (fmap f m)
 -- instance Functor Music where
 --     fmap = mMap
 
+
+
+-- | Fold over a Music structure, allowing transformation of the entire music tree
+-- into a single value by providing functions to handle each constructor.
+--
+-- Parameters:
+-- - f: handles Primitive values
+-- - (+:): combines sequential compositions
+-- - (=:): combines parallel compositions
+-- - g: handles modifications
+
 mFold ::  (Primitive a -> b) -> (b->b->b) -> (b->b->b) ->
           (Control -> b -> b) -> Music a -> b
 mFold f (+:) (=:) g m =
@@ -496,6 +659,48 @@ mFold f (+:) (=:) g m =
        m1 :+: m2  -> rec m1 +: rec m2
        m1 :=: m2  -> rec m1 =: rec m2
        Modify c m -> g c (rec m)
+
+
+
+
+
+-- Calculate total duration
+dur' :: Music a -> Dur
+dur' = mFold primDur (+) max tempoMod
+  where
+    primDur (Note d _) = d
+    primDur (Rest d)   = d
+    tempoMod (Tempo r) d = d/r
+    tempoMod _ d         = d
+
+-- Count all notes
+countNotes :: Music a -> Int
+countNotes = mFold f (+) (+) (\_ n -> n)
+  where
+    f (Note _ _) = 1
+    f (Rest _)   = 0
+
+-- Collect all pitches
+getPitches :: Music Pitch -> [Pitch]
+getPitches = mFold f (++) (++) (\_ ps -> ps)
+  where
+    f (Note _ p) = [p]
+    f (Rest _)   = []
+
+-- Convert to simple string representation
+showMusic :: Show a => Music a -> String
+showMusic = mFold f (+++) (|||) g
+  where
+    f (Note d p) = "Note " ++ show d ++ " " ++ show p
+    f (Rest d)   = "Rest " ++ show d
+    (+++) s1 s2 = s1 ++ " :+: " ++ s2
+    (|||) s1 s2 = s1 ++ " :=: " ++ s2
+    g c s = "Modify " ++ show c ++ " (" ++ s ++ ")"
+
+
+
+
+
 
 shiftPitches :: AbsPitch -> Music Pitch -> Music Pitch
 shiftPitches k = fmap (trans k)
@@ -575,133 +780,132 @@ data InstrumentName =
 
 
 
-  {-
+-- | Map over the primitive values in a Music structure while preserving the overall structure.
+--
+-- Parameters:
+-- - f: Function to transform primitive values
+--
+-- Examples:
+-- >>> .mapM (\(Note d p) -> Note d (p + 1)) (note 1 (C,4))
+-- WAS Prim (Note (1 % 1) (D,4))
+-- NOW parse error on input `.'
+mapM :: (Primitive a -> Primitive b) -> Music a -> Music b
+mapM func = mFold (Prim . func) (:+:) (:=:) Modify
 
--- | PitchClass represents musical notes including quarter tones
--- Each note can be:
--- Double flat (ff), Flat-and-a-quarter (fq), Flat (f), Quarter-flat (qf)
--- Natural (n), Quarter-sharp (qs), Sharp (s), Sharp-and-a-quarter (sq), Double sharp (ss)
-data PitchClass =
-    Cff  | Cfq  | Cf   | Cqf  | C    | Cqs  | Cs   | Csq  | Css  |
-    Dff  | Dfq  | Df   | Dqf  | D    | Dqs  | Ds   | Dsq  | Dss  |
-    Eff  | Efq  | Ef   | Eqf  | E    | Eqs  | Es   | Esq  | Ess  |
-    Fff  | Ffq  | Ff   | Fqf  | F    | Fqs  | Fs   | Fsq  | Fss  |
-    Gff  | Gfq  | Gf   | Gqf  | G    | Gqs  | Gs   | Gsq  | Gss  |
-    Aff  | Afq  | Af   | Aqf  | A    | Aqs  | As   | Asq  | Ass  |
-    Bff  | Bfq  | Bf   | Bqf  | B    | Bqs  | Bs   | Bsq  | Bss
-    deriving (Show, Eq, Ord, Read, Enum, Bounded)
 
--- Updated pitch conversion map to handle quarter tones
--- Each quarter step is represented by 0.5 in the conversion
-pcToIntMap :: Map.Map PitchClass Double
-pcToIntMap = Map.fromList [
-    -- C and variants (from double-flat to double-sharp)
-    (Cff, -2.0), (Cfq, -1.75), (Cf, -1.5), (Cqf, -1.25), (C, 0.0),
-    (Cqs, 0.25), (Cs, 0.5),    (Csq, 0.75), (Css, 1.0),
 
-    -- D and variants
-    (Dff, 0.0),  (Dfq, 0.25),  (Df, 0.5),   (Dqf, 0.75), (D, 1.0),
-    (Dqs, 1.25), (Ds, 1.5),    (Dsq, 1.75), (Dss, 2.0),
+-- | Bottom-up fold over a Music structure, accumulating a value while traversing
+-- from leaves to root, similar to foldl for lists.
+--
+-- Parameters:
+-- - f: Function to process primitive values with accumulator
+-- - (+:): Function to combine sequential compositions
+-- - (=:): Function to combine parallel compositions
+-- - g: Function to handle modifications
+-- - z: Initial accumulator value
+--
+-- Examples:
+-- >>> mFoldl (\acc p -> case p of Note _ _ -> acc + 1; Rest _ -> acc) (+) (+) const 0 (note 1 (C,4) :+: note 1 (D,4))
+-- WAS WAS 2
+-- WAS NOW Variable not in scope: c4
+-- WAS NOW Variable not in scope: d4
+-- NOW 2
+--
+-- Examples:
+-- >>> mFoldl (\acc (Note _ _) -> acc + 1) (+) (+) (\_ n -> n) 0 (note 1 C :+: note 1 D)
+-- No instance for `Num Control' arising from a use of `+'
+-- In the expression: acc_aP91V + 1
+-- In the first argument of `mFoldl', namely
+--   `(\ acc_aP91V (Note _ _) -> acc_aP91V + 1)'
+-- In the expression:
+--   mFoldl
+--     (\ acc_aP91V (Note _ _) -> acc_aP91V + 1) (+) (+)
+--     (\ _ n_aP91W -> n_aP91W) 0 (note 1 C :+: note 1 D)
 
-    -- E and variants
-    (Eff, 2.0),  (Efq, 2.25),  (Ef, 2.5),   (Eqf, 2.75), (E, 3.0),
-    (Eqs, 3.25), (Es, 3.5),    (Esq, 3.75), (Ess, 4.0),
+mFoldl :: (b -> Primitive a -> b) -> (b -> b -> b) -> (b -> b -> b)
+       -> (b -> Control -> b) -> b -> Music a -> b
+mFoldl func (+:) (=:) g z m = case m of
+    Prim p -> func z p
+    m1 :+: m2 -> let z' = mFoldl func (+:) (=:) g z m1
+                 in mFoldl func (+:) (=:) g z' m2
+    m1 :=: m2 -> let z1 = mFoldl func (+:) (=:) g z m1
+                     z2 = mFoldl func (+:) (=:) g z m2
+                 in z1 =: z2
+    Modify cu m' -> g (mFoldl func (+:) (=:) g z m') cu
 
-    -- F and variants
-    (Fff, 3.0),  (Ffq, 3.25),  (Ff, 3.5),   (Fqf, 3.75), (F, 4.0),
-    (Fqs, 4.25), (Fs, 4.5),    (Fsq, 4.75), (Fss, 5.0),
+-- | Traverse a Music structure with effects while maintaining the structure.
+-- Useful for operations that might fail or have side effects.
+--
+-- Parameters:
+-- - f: Function to process primitives with effects
+--
+-- Examples:
+-- >>> let checkDuration (Note d p) = if d > 0 then Just (Note d p) else Nothing; checkDuration r@(Rest _) = Just r
+-- >>> mTraverse checkDuration (note 1 (C,4) :+: note (-1) (D,4))
+-- Nothing
+mTraverse :: Applicative f => (Primitive a -> f (Primitive b)) -> Music a -> f (Music b)
+mTraverse func m = case m of
+    Prim p       -> Prim <$> func p
+    m1 :+: m2    -> (:+:) <$> mTraverse func m1 <*> mTraverse func m2
+    m1 :=: m2    -> (:=:) <$> mTraverse func m1 <*> mTraverse func m2
+    Modify cu m' -> Modify cu <$> mTraverse func m'
 
-    -- G and variants
-    (Gff, 5.0),  (Gfq, 5.25),  (Gf, 5.5),   (Gqf, 5.75), (G, 6.0),
-    (Gqs, 6.25), (Gs, 6.5),    (Gsq, 6.75), (Gss, 7.0),
+-- | Monadic fold
+mFoldM :: Monad m => (Primitive a -> m b) -> (b -> b -> m b)
+       -> (b -> b -> m b) -> (Control -> b -> m b)
+       -> Music a -> m b
+mFoldM f (+:) (=:) g m = case m of
+    Prim p -> f p
+    m1 :+: m2 -> do
+        x1 <- mFoldM f (+:) (=:) g m1
+        x2 <- mFoldM f (+:) (=:) g m2
+        x1 +: x2
+    m1 :=: m2 -> do
+        x1 <- mFoldM f (+:) (=:) g m1
+        x2 <- mFoldM f (+:) (=:) g m2
+        x1 =: x2
+    Modify c m' -> do
+        x <- mFoldM f (+:) (=:) g m'
+        g c x
 
-    -- A and variants
-    (Aff, 7.0),  (Afq, 7.25),  (Af, 7.5),   (Aqf, 7.75), (A, 8.0),
-    (Aqs, 8.25), (As, 8.5),    (Asq, 8.75), (Ass, 9.0),
+-- | Accumulating fold (with state)
+mFoldS :: (s -> Primitive a -> (b, s)) -> (b -> b -> b)
+       -> (b -> b -> b) -> (Control -> b -> b)
+       -> s -> Music a -> (b, s)
+mFoldS f (+:) (=:) g s m = case m of
+    Prim p -> f s p
+    m1 :+: m2 -> let (x1, s1) = mFoldS f (+:) (=:) g s m1
+                     (x2, s2) = mFoldS f (+:) (=:) g s1 m2
+                 in (x1 +: x2, s2)
+    m1 :=: m2 -> let (x1, s1) = mFoldS f (+:) (=:) g s m1
+                     (x2, s2) = mFoldS f (+:) (=:) g s1 m2
+                 in (x1 =: x2, s2)
+    Modify c m' -> let (x, s') = mFoldS f (+:) (=:) g s m'
+                  in (g c x, s')
 
-    -- B and variants
-    (Bff, 9.0),  (Bfq, 9.25),  (Bf, 9.5),   (Bqf, 9.75), (B, 10.0),
-    (Bqs, 10.25), (Bs, 10.5),  (Bsq, 10.75), (Bss, 11.0)
-  ]
+-- -- Using mapM to transpose all notes
+-- transpose2 :: Int -> Music Pitch -> Music Pitch
+-- transpose2 n = mapM f
+--   where f (Note d p) = Note d (p + n)
+--         f (Rest d) = Rest d
 
--- Quarter tone helper functions
-cff, cfq, cf, cqf, c, cqs, cs, csq, css,
-dff, dfq, df, dqf, d, dqs, ds, dsq, dss,
-eff, efq, ef, eqf, e, eqs, es, esq, ess,
-fff, ffq, ff, fqf, f, fqs, fs, fsq, fss,
-gff, gfq, gf, gqf, g, gqs, gs, gsq, gss,
-aff, afq, af, aqf, a, aqs, as, asq, ass,
-bff, bfq, bf, bqf, b, bqs, bs, bsq, bss :: Octave -> Dur -> Music Pitch
+-- Using mFoldM for validation
+-- validateDurations :: Music Pitch -> Either String Dur
+-- validateDurations = mFoldM f (+) max g
+--   where
+--     f (Note d _) | d < 0 = Left "Negative duration"
+--                  | otherwise = Right d
+--     f (Rest d) | d < 0 = Left "Negative duration"
+--                | otherwise = Right d
+--     g (Tempo r) d | r <= 0 = Left "Invalid tempo"
+--                   | otherwise = Right (d/r)
+--     g _ d = Right d
 
--- C family
-cff o d = note d (Cff, o); cfq o d = note d (Cfq, o)
-cf  o d = note d (Cf,  o); cqf o d = note d (Cqf, o)
-c   o d = note d (C,   o); cqs o d = note d (Cqs, o)
-cs  o d = note d (Cs,  o); csq o d = note d (Csq, o)
-css o d = note d (Css, o)
-
--- D family
-dff o d = note d (Dff, o); dfq o d = note d (Dfq, o)
-df  o d = note d (Df,  o); dqf o d = note d (Dqf, o)
-d   o d = note d (D,   o); dqs o d = note d (Dqs, o)
-ds  o d = note d (Ds,  o); dsq o d = note d (Dsq, o)
-dss o d = note d (Dss, o)
-
--- E family
-eff o d = note d (Eff, o); efq o d = note d (Efq, o)
-ef  o d = note d (Ef,  o); eqf o d = note d (Eqf, o)
-e   o d = note d (E,   o); eqs o d = note d (Eqs, o)
-es  o d = note d (Es,  o); esq o d = note d (Esq, o)
-ess o d = note d (Ess, o)
-
--- F family
-fff o d = note d (Fff, o); ffq o d = note d (Ffq, o)
-ff  o d = note d (Ff,  o); fqf o d = note d (Fqf, o)
-f   o d = note d (F,   o); fqs o d = note d (Fqs, o)
-fs  o d = note d (Fs,  o); fsq o d = note d (Fsq, o)
-fss o d = note d (Fss, o)
-
--- G family
-gff o d = note d (Gff, o); gfq o d = note d (Gfq, o)
-gf  o d = note d (Gf,  o); gqf o d = note d (Gqf, o)
-g   o d = note d (G,   o); gqs o d = note d (Gqs, o)
-gs  o d = note d (Gs,  o); gsq o d = note d (Gsq, o)
-gss o d = note d (Gss, o)
-
--- A family
-aff o d = note d (Aff, o); afq o d = note d (Afq, o)
-af  o d = note d (Af,  o); aqf o d = note d (Aqf, o)
-a   o d = note d (A,   o); aqs o d = note d (Aqs, o)
-as  o d = note d (As,  o); asq o d = note d (Asq, o)
-ass o d = note d (Ass, o)
-
--- B family
-bff o d = note d (Bff, o); bfq o d = note d (Bfq, o)
-bf  o d = note d (Bf,  o); bqf o d = note d (Bqf, o)
-b   o d = note d (B,   o); bqs o d = note d (Bqs, o)
-bs  o d = note d (Bs,  o); bsq o d = note d (Bsq, o)
-bss o d = note d (Bss, o)
-
--- Updated pitch conversion for quarter tones
--- Now using Double for more precise pitch calculations
-type AbsPitch = Double
-
-absPitch :: Pitch -> AbsPitch
-absPitch (pc, oct) = 12 * fromIntegral (oct + 1) + fromMaybe 0 (Map.lookup pc pcToIntMap)
-
--- Convert absolute pitch back to Pitch, handling quarter tones
-pitch :: AbsPitch -> Pitch
-pitch ap =
-    let (oct, remainder) = properFraction (ap / 12)
-        quartertoneVal = remainder * 12
-        pc = findClosestPitch quartertoneVal
-    in (pc, oct - 1)
+-- Using mFoldS to number all notes
+-- >>> numberNotes (note qn (C,4) :+: note qn (D,4))
+-- (Prim (Note (1 % 4) (1,(C,4))) :+: Prim (Note (1 % 4) (2,(D,4))),3)
+numberNotes :: Music Pitch -> (Music (Int, Pitch), Int)
+numberNotes = mFoldS func (:+:) (:=:) Modify 1
   where
-    findClosestPitch val =
-        fst $ minimumBy (comparing (abs . subtract val . snd)) (Map.toList pcToIntMap)
-
--- Updated transposition to handle quarter tones
-trans :: Double -> Pitch -> Pitch
-trans i p = pitch (absPitch p + i)
-
-  -}
+    func n (Note durac p) = (Prim (Note durac (n, p)), n+1)
+    func n (Rest durac)   = (Prim (Rest durac), n)

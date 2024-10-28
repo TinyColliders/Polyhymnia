@@ -45,6 +45,7 @@ library
       Euterpea.IO.MIDI.ExportMidiFile
       Euterpea.IO.MIDI
   other-modules:
+      VividEuterpea
       Paths_euterpea
   autogen-modules:
       Paths_euterpea
@@ -65,4 +66,5 @@ library
     , random
     , stm
     , vector
+    , vivid
   default-language: Haskell2010

@@ -71,9 +71,9 @@ applyControls x = x
 
 -- | Convert a Music1 structure to a list of MEvents and compute its duration.
 musicToMEvents :: MContext -> Music1 -> (Performance, DurT)
-musicToMEvents c@MContext{mcTime=t, mcDur=dt} (Prim (Note d p)) = ([noteToMEvent c d p], d*dt)
-musicToMEvents c@MContext{mcTime=t, mcDur=dt} (Prim (Rest d)) = ([], d*dt)
-musicToMEvents c@MContext{mcTime=t, mcDur=dt} (m1 :+: m2) =
+musicToMEvents c@MContext{mcTime=_, mcDur=dt} (Prim (Note d p)) = ([noteToMEvent c d p], d*dt)
+musicToMEvents c@MContext{mcTime=_, mcDur=dt} (Prim (Rest d)) = ([], d*dt)
+musicToMEvents c@MContext{mcTime=t, mcDur=_} (m1 :+: m2) =
     let (evs1, d1) = musicToMEvents c m1
         (evs2, d2) = musicToMEvents c{mcTime = t+d1} m2
     in  (evs1 ++ evs2, d1+d2)

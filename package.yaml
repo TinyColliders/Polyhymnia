@@ -63,3 +63,4 @@ library:
     - heap 
     - vector
     - concurrency
+    - vivid

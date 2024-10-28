@@ -37,7 +37,7 @@ data Music a where
   (:+:) :: Music a -> Music a -> Music a
   (:=:) :: Music a -> Music a -> Music a
   Modify :: Control -> (Music a) -> Music a
-  deriving (Show, Eq, Ord)
+  deriving (Show, Eq)
 
 instance Functor Music where
     fmap :: (a -> b) -> Music a -> Music b
@@ -53,12 +53,12 @@ data Control where
   Phrase :: [PhraseAttribute] -> Control
   KeySig :: PitchClass -> Mode -> Control
   Custom :: String -> Control
-  deriving (Show, Eq, Ord)
+  deriving (Show, Eq)
 
 data Mode = Major | Minor |
             Ionian | Dorian | Phrygian | Lydian | Mixolydian | Aeolian | Locrian |
             CustomMode String
-  deriving (Show, Eq, Ord)
+  deriving (Show, Eq, Ord, Read)
 
 
 data PhraseAttribute  =  Dyn Dynamic

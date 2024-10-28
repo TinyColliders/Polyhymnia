@@ -3,7 +3,7 @@
 --  HSoM/GeneralMidi.lhs.  (See HSoM/MakeCode.bat.)
 {-# LINE 16 "GeneralMidi.lhs" #-}
 module Euterpea.IO.MIDI.GeneralMidi where
-import Euterpea.Music (InstrumentName(..))
+import Euterpea.Music
 
 fromGM :: Int -> InstrumentName
 fromGM i | i >= 0 && i <= 127 = toEnum i

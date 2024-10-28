@@ -25,7 +25,7 @@ data PitchClass  =  Cff | Cf | C | Dff | Cs | Df | Css | D | Eff | Ds
                  |  Ef | Fff | Dss | E | Ff | Es | F | Gff | Ess | Fs
                  |  Gf | Fss | G | Aff | Gs | Af | Gss | A | Bff | As
                  |  Bf | Ass | B | Bs | Bss
-     deriving (Show, Eq, Ord, Read, Enum, Bounded)
+     deriving (Show, Eq, Ord, Read, Bounded)
 
 data Primitive a where
   Note :: Dur -> a -> Primitive a
@@ -37,14 +37,14 @@ data Music a where
   (:+:) :: Music a -> Music a -> Music a
   (:=:) :: Music a -> Music a -> Music a
   Modify :: Control -> (Music a) -> Music a
-  deriving (Show, Eq, Ord, Functor)
+  deriving (Show, Eq, Ord)
 
--- instance Functor Music where
---     fmap = mMap  -- or directly:
---     fmap f (Prim p) = Prim (fmap f p)        -- Note: uses Primitive's Functor instance
---     fmap f (m1 :+: m2) = fmap f m1 :+: fmap f m2
---     fmap f (m1 :=: m2) = fmap f m1 :=: fmap f m2
---     fmap f (Modify c m) = Modify c (fmap f m)
+instance Functor Music where
+    fmap :: (a -> b) -> Music a -> Music b
+    fmap f (Prim p)     = Prim (fmap f p)        --  uses Primitive's Functor instance
+    fmap f (m1 :+: m2)  = fmap f m1 :+: fmap f m2
+    fmap f (m1 :=: m2)  = fmap f m1 :=: fmap f m2
+    fmap f (Modify c m) = Modify c (fmap f m)
 
 data Control where
   Tempo :: Rational -> Control
@@ -109,10 +109,10 @@ addVolume v = fmap (, v)
 
 
 data NoteAttribute
-    = Volume {-# UNPACK #-} !Int -- Utilize Int for efficiency
+    = Volume {-# UNPACK #-} !Int
     | Fingering {-# UNPACK #-} !Int
     | Dynamics !String
-    | Params ![Double] -- Using Vector instead of list for potential performance gains
+    | Params ![Double]
     deriving (Eq, Show, Generic)
 
 type Note1   = (Pitch, [NoteAttribute])
@@ -311,30 +311,31 @@ dur music = case music of
     primDur (Rest dur_)   = dur_
 
 -- | The 'cut' function trims a 'Music' structure to a specified duration 'd'.
---   It effectively limits the music piece's playtime to the provided duration.
+-- It effectively limits the music piece's playtime to the provided duration.
 --
---   This function processes different musical constructs:
---   - Simple notes and rests.
---   - Parallel and sequential compositions.
---   - Modifications such as tempo changes.
+-- This function processes different musical constructs:
+-- - Simple notes and rests are truncated to not exceed 'd'
+-- - Parallel compositions have both parts cut to 'd'
+-- - Sequential compositions are cut with remaining duration passed to subsequent parts
+-- - Tempo modifications adjust 'd' proportionally
 --
---   Special Cases:
---   - If 'd' <= 0, the result is a rest with zero duration.
---   - For parallel (:=:) structures, each component is independently cut to duration 'd'.
---   - In sequential (:|:) structures, the first part is cut to 'd', and then, if needed,
---     the remaining duration is applied to subsequent parts.
---   - Tempo modifications adjust 'd' proportionally when cutting.
+-- Special Cases:
+-- - If 'd' <= 0, returns a rest with zero duration
+-- - Notes/rests beyond the cut point get zero duration
+-- - Preserves structure but may result in zero-duration elements
 --
---   Returns:
---   A new 'Music' object that plays for only up to the requested duration.
---
+-- Examples:
 -- >>> cut 2 (note 1 (C,4) :+: note 2 (D,4))
--- NOW Prim (Note (1 % 1) (C,4)) :+: Prim (Note (1 % 1) (D,4))
+-- Prim (Note (1 % 1) (C,4)) :+: Prim (Note (1 % 1) (D,4))
+-- WAS WAS WAS Note: second note duration reduced from 2 to 1
 --
 -- >>> cut 1 (note 2 (C,4) :+: note 1 (D,4))
 -- Prim (Note (1 % 1) (C,4)) :+: Prim (Rest (0 % 1))
+-- WAS WAS WAS Note: first note truncated, second note replaced with zero rest
+--
+
 cut :: Dur -> Music a -> Music a
-cut dur_ m | dur_ <= 0         = rest 0
+cut dur_ _ | dur_ <= 0         = rest 0
 cut dur_ (Prim (Note oldD p))  =  let d' = max (min oldD dur_) 0
                                in if d'>0 then note d' p else rest 0
 cut dur_ (Prim (Rest oldD))    = rest (max (min oldD dur_) 0)
@@ -343,32 +344,33 @@ cut dur_ (m1 :+: m2)           =  let  m'1  = cut dur_ m1
                                        m'2  = cut (dur_ - dur m'1) m2
                                in   m'1 :+: m'2
 cut dur_ (Modify (Tempo r) m)  = tempo r (cut (dur_*r) m)
-cut dur_ (Modify c m)          = Modify c (cut dur_ m)
+cut dur_ (Modify cu m)          = Modify cu (cut dur_ m)
 
 
--- | The 'remove' function traverses a 'Music' structure and subtracts a given duration 'd'
---   from it. It effectively removes the specified amount of duration from notes and rests
---   in the music piece. If 'd' is greater than or equal to the duration of a note or rest,
---   that element is shortened or potentially removed.
+
+-- | The 'remove' function subtracts a given duration 'd' from a Music structure.
+-- Notes and rests at the start are shortened by 'd', potentially being eliminated
+-- if their duration is less than or equal to 'd'.
 --
---   This function handles different music constructs:
---   - Simple notes and rests.
---   - Parallel and sequential compositions.
---   - Modifications like tempo changes.
+-- This function processes:
+-- - Notes and rests are shortened by 'd'
+-- - Parallel compositions have 'd' removed from both parts
+-- - Sequential compositions subtract 'd' progressively
+-- - Tempo modifications scale 'd' appropriately
 --
---   Special Cases:
---   - If 'd' <= 0, the entire music piece remains unchanged.
---   - When removing from parallel (:=:) structures, 'd' is applied to both components.
---   - In sequential (:|:) structures, 'd' is reduced by the duration of each segment before
---     being applied to subsequent segments.
---   - Tempo modification is factored into the removal process by adjusting 'd' proportionally.
+-- Special Cases:
+-- - If 'd' <= 0, music remains unchanged
+-- - Elements completely consumed by 'd' become zero duration
+-- - Maintains structure while adjusting durations
 --
---   Returns:
---   A new 'Music' object with the requested duration removed.
+-- Examples:
 -- >>> remove 0.5 (note 2 (C,4) :+: note 1 (D,4))
--- NOW Prim (Note (3 % 2) (C,4)) :+: Prim (Note (1 % 1) (D,4))
+-- Prim (Note (3 % 2) (C,4)) :+: Prim (Note (1 % 1) (D,4))
+-- WAS WAS Note: first note shortened by 0.5, second unchanged
+--
 -- >>> remove 1 (note 2 (C,4) :+: note 1 (D,4))
 -- Prim (Note (1 % 1) (C,4)) :+: Prim (Note (1 % 1) (D,4))
+-- WAS WAS Note: first note shortened by 1, second unchanged
 remove :: Dur -> Music a -> Music a
 remove dur_ m | dur_ <= 0            = m
 remove dur_ (Prim (Note oldD p))  =  let d' = max (oldD-dur_) 0
@@ -485,43 +487,6 @@ mergeLD ld1@(d1:ds1) ld2@(d2:ds2) =
     if d1 < d2 then d1 : mergeLD ds1 ld2  -- Take smaller duration and continue
              else d2 : mergeLD ld1 ds2  -- Preserves all timing points
 
--- removeZeros :: Music a -> Music a
--- removeZeros (Prim p)      = Prim p
--- removeZeros (m1 :+: m2)   =
---   let  m'1  = removeZeros m1
---        m'2  = removeZeros m2
---   in case (m'1,m'2) of
---        (Prim (Note 0 _), m) -> m
---        (Prim (Rest 0  ), m) -> m
---        (m, Prim (Note 0 _)) -> m
---        (m, Prim (Rest 0  )) -> m
---        (m1, m2)             -> m1 :+: m2
--- removeZeros (m1 :=: m2)   =
---   let  m'1  = removeZeros m1
---        m'2  = removeZeros m2
---   in case (m'1,m'2) of
---        (Prim (Note 0 _), m) -> m
---        (Prim (Rest 0  ), m) -> m
---        (m, Prim (Note 0 _)) -> m
---        (m, Prim (Rest 0  )) -> m
---        (m1, m2)             -> m1 :=: m2
--- removeZeros (Modify c m)  = Modify c (removeZeros m)
-
--- type LazyDur = [Dur]
--- durL :: Music a -> LazyDur
--- durL m@(Prim _)            =  [dur m]
--- durL (m1 :+: m2)           =  let d1 = durL m1
---                               in d1 ++ map (+last d1) (durL m2)
--- durL (m1 :=: m2)           =  mergeLD (durL m1) (durL m2)
--- durL (Modify (Tempo r) m)  =  map (/r) (durL m)
--- durL (Modify _ m)          =  durL m
-
--- mergeLD :: LazyDur -> LazyDur -> LazyDur
--- mergeLD [] ld = ld
--- mergeLD ld [] = ld
--- mergeLD ld1@(d1:ds1) ld2@(d2:ds2) =
---   if d1<d2  then  d1 : mergeLD ds1 ld2
---             else  d2 : mergeLD ld1 ds2
 
 
 -- | The 'minL' function computes the minimum duration from a list of durations
@@ -602,26 +567,7 @@ m1 /=: m2 = cutL (durL m2) m1 :=: cutL (durL m1) m2
 -- (/=:)      :: Music a -> Music a -> Music a
 -- m1 /=: m2  = cutL (durL m2) m1 :=: cutL (durL m1) m2
 
-data PercussionSound =
-        AcousticBassDrum  --  MIDI Key 35
-     |  BassDrum1         --  MIDI Key 36
-     |  SideStick         --  ...
-     |  AcousticSnare  | HandClap      | ElectricSnare  | LowFloorTom
-     |  ClosedHiHat    | HighFloorTom  | PedalHiHat     | LowTom
-     |  OpenHiHat      | LowMidTom     | HiMidTom       | CrashCymbal1
-     |  HighTom        | RideCymbal1   | ChineseCymbal  | RideBell
-     |  Tambourine     | SplashCymbal  | Cowbell        | CrashCymbal2
-     |  Vibraslap      | RideCymbal2   | HiBongo        | LowBongo
-     |  MuteHiConga    | OpenHiConga   | LowConga       | HighTimbale
-     |  LowTimbale     | HighAgogo     | LowAgogo       | Cabasa
-     |  Maracas        | ShortWhistle  | LongWhistle    | ShortGuiro
-     |  LongGuiro      | Claves        | HiWoodBlock    | LowWoodBlock
-     |  MuteCuica      | OpenCuica     | MuteTriangle
-     |  OpenTriangle      --  MIDI Key 82
-   deriving (Show,Eq,Ord,Enum)
 
-perc :: PercussionSound -> Dur -> Music Pitch
-perc ps dur = instrument Percussion $ note dur (pitch (fromEnum ps + 35))
 
 pMap               :: (a -> b) -> Primitive a -> Primitive b
 pMap f (Note dur_ x) = Note dur_ (f x)
@@ -728,55 +674,6 @@ removeInstruments (Modify c m) = Modify c $ removeInstruments m
 removeInstruments (m1 :+: m2) = removeInstruments m1 :+: removeInstruments m2
 removeInstruments (m1 :=: m2) = removeInstruments m1 :=: removeInstruments m2
 removeInstruments m = m
-
-
-
-data InstrumentName =
-     AcousticGrandPiano     | BrightAcousticPiano    | ElectricGrandPiano
-  |  HonkyTonkPiano         | RhodesPiano            | ChorusedPiano
-  |  Harpsichord            | Clavinet               | Celesta
-  |  Glockenspiel           | MusicBox               | Vibraphone
-  |  Marimba                | Xylophone              | TubularBells
-  |  Dulcimer               | HammondOrgan           | PercussiveOrgan
-  |  RockOrgan              | ChurchOrgan            | ReedOrgan
-  |  Accordion              | Harmonica              | TangoAccordion
-  |  AcousticGuitarNylon    | AcousticGuitarSteel    | ElectricGuitarJazz
-  |  ElectricGuitarClean    | ElectricGuitarMuted    | OverdrivenGuitar
-  |  DistortionGuitar       | GuitarHarmonics        | AcousticBass
-  |  ElectricBassFingered   | ElectricBassPicked     | FretlessBass
-  |  SlapBass1              | SlapBass2              | SynthBass1
-  |  SynthBass2             | Violin                 | Viola
-  |  Cello                  | Contrabass             | TremoloStrings
-  |  PizzicatoStrings       | OrchestralHarp         | Timpani
-  |  StringEnsemble1        | StringEnsemble2        | SynthStrings1
-  |  SynthStrings2          | ChoirAahs              | VoiceOohs
-  |  SynthVoice             | OrchestraHit           | Trumpet
-  |  Trombone               | Tuba                   | MutedTrumpet
-  |  FrenchHorn             | BrassSection           | SynthBrass1
-  |  SynthBrass2            | SopranoSax             | AltoSax
-  |  TenorSax               | BaritoneSax            | Oboe
-  |  Bassoon                | EnglishHorn            | Clarinet
-  |  Piccolo                | Flute                  | Recorder
-  |  PanFlute               | BlownBottle            | Shakuhachi
-  |  Whistle                | Ocarina                | Lead1Square
-  |  Lead2Sawtooth          | Lead3Calliope          | Lead4Chiff
-  |  Lead5Charang           | Lead6Voice             | Lead7Fifths
-  |  Lead8BassLead          | Pad1NewAge             | Pad2Warm
-  |  Pad3Polysynth          | Pad4Choir              | Pad5Bowed
-  |  Pad6Metallic           | Pad7Halo               | Pad8Sweep
-  |  FX1Train               | FX2Soundtrack          | FX3Crystal
-  |  FX4Atmosphere          | FX5Brightness          | FX6Goblins
-  |  FX7Echoes              | FX8SciFi               | Sitar
-  |  Banjo                  | Shamisen               | Koto
-  |  Kalimba                | Bagpipe                | Fiddle
-  |  Shanai                 | TinkleBell             | Agogo
-  |  SteelDrums             | Woodblock              | TaikoDrum
-  |  MelodicDrum            | SynthDrum              | ReverseCymbal
-  |  GuitarFretNoise        | BreathNoise            | Seashore
-  |  BirdTweet              | TelephoneRing          | Helicopter
-  |  Applause               | Gunshot                | Percussion
-  |  CustomInstrument String
-  deriving (Show, Eq, Ord)
 
 
 
@@ -909,3 +806,73 @@ numberNotes = mFoldS func (:+:) (:=:) Modify 1
   where
     func n (Note durac p) = (Prim (Note durac (n, p)), n+1)
     func n (Rest durac)   = (Prim (Rest durac), n)
+
+
+
+
+
+data InstrumentName =
+     AcousticGrandPiano     | BrightAcousticPiano    | ElectricGrandPiano
+  |  HonkyTonkPiano         | RhodesPiano            | ChorusedPiano
+  |  Harpsichord            | Clavinet               | Celesta
+  |  Glockenspiel           | MusicBox               | Vibraphone
+  |  Marimba                | Xylophone              | TubularBells
+  |  Dulcimer               | HammondOrgan           | PercussiveOrgan
+  |  RockOrgan              | ChurchOrgan            | ReedOrgan
+  |  Accordion              | Harmonica              | TangoAccordion
+  |  AcousticGuitarNylon    | AcousticGuitarSteel    | ElectricGuitarJazz
+  |  ElectricGuitarClean    | ElectricGuitarMuted    | OverdrivenGuitar
+  |  DistortionGuitar       | GuitarHarmonics        | AcousticBass
+  |  ElectricBassFingered   | ElectricBassPicked     | FretlessBass
+  |  SlapBass1              | SlapBass2              | SynthBass1
+  |  SynthBass2             | Violin                 | Viola
+  |  Cello                  | Contrabass             | TremoloStrings
+  |  PizzicatoStrings       | OrchestralHarp         | Timpani
+  |  StringEnsemble1        | StringEnsemble2        | SynthStrings1
+  |  SynthStrings2          | ChoirAahs              | VoiceOohs
+  |  SynthVoice             | OrchestraHit           | Trumpet
+  |  Trombone               | Tuba                   | MutedTrumpet
+  |  FrenchHorn             | BrassSection           | SynthBrass1
+  |  SynthBrass2            | SopranoSax             | AltoSax
+  |  TenorSax               | BaritoneSax            | Oboe
+  |  Bassoon                | EnglishHorn            | Clarinet
+  |  Piccolo                | Flute                  | Recorder
+  |  PanFlute               | BlownBottle            | Shakuhachi
+  |  Whistle                | Ocarina                | Lead1Square
+  |  Lead2Sawtooth          | Lead3Calliope          | Lead4Chiff
+  |  Lead5Charang           | Lead6Voice             | Lead7Fifths
+  |  Lead8BassLead          | Pad1NewAge             | Pad2Warm
+  |  Pad3Polysynth          | Pad4Choir              | Pad5Bowed
+  |  Pad6Metallic           | Pad7Halo               | Pad8Sweep
+  |  FX1Train               | FX2Soundtrack          | FX3Crystal
+  |  FX4Atmosphere          | FX5Brightness          | FX6Goblins
+  |  FX7Echoes              | FX8SciFi               | Sitar
+  |  Banjo                  | Shamisen               | Koto
+  |  Kalimba                | Bagpipe                | Fiddle
+  |  Shanai                 | TinkleBell             | Agogo
+  |  SteelDrums             | Woodblock              | TaikoDrum
+  |  MelodicDrum            | SynthDrum              | ReverseCymbal
+  |  GuitarFretNoise        | BreathNoise            | Seashore
+  |  BirdTweet              | TelephoneRing          | Helicopter
+  |  Applause               | Gunshot                | Percussion
+  |  CustomInstrument String
+  deriving (Show, Eq, Ord)
+
+
+data PercussionSound =
+        AcousticBassDrum  --  MIDI Key 35
+     |  BassDrum1         --  MIDI Key 36
+     |  SideStick         --  ...
+     |  AcousticSnare  | HandClap      | ElectricSnare  | LowFloorTom
+     |  ClosedHiHat    | HighFloorTom  | PedalHiHat     | LowTom
+     |  OpenHiHat      | LowMidTom     | HiMidTom       | CrashCymbal1
+     |  HighTom        | RideCymbal1   | ChineseCymbal  | RideBell
+     |  Tambourine     | SplashCymbal  | Cowbell        | CrashCymbal2
+     |  Vibraslap      | RideCymbal2   | HiBongo        | LowBongo
+     |  MuteHiConga    | OpenHiConga   | LowConga       | HighTimbale
+     |  LowTimbale     | HighAgogo     | LowAgogo       | Cabasa
+     |  Maracas        | ShortWhistle  | LongWhistle    | ShortGuiro
+     |  LongGuiro      | Claves        | HiWoodBlock    | LowWoodBlock
+     |  MuteCuica      | OpenCuica     | MuteTriangle
+     |  OpenTriangle      --  MIDI Key 82
+   deriving (Show,Eq,Ord,Enum)
